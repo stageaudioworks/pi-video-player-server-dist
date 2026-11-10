@@ -1,0 +1,94 @@
+{% extends "layout.html" %}
+{% block title %}Content{% endblock %}
+{% block body %}
+<div class="card">
+  <h3>Add a clip</h3>
+  <div class="row">
+    <input type="file" id="file" accept=".mp4">
+    <button class="btn btn-green btn-sm" id="upBtn" onclick="upload()">Upload</button>
+    <span id="upSt" class="hint"></span>
+  </div>
+  <div class="bar" id="upBar" style="display:none"><div></div></div>
+  <p class="hint">MP4 only, as on the players. Content is PAL: 25 fps. Encode at 1080p - 4K drops frames on a Pi 5.
+     <span id="disk"></span></p>
+</div>
+<div class="card">
+  <h3>Send a clip to players</h3>
+  <div class="row">
+    <select id="aClip"></select>
+    <span class="hint">into</span>
+    <select id="aSlot">{% for s in slots %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select>
+  </div>
+  <div class="row hint"><a href="#" onclick="pickAll(document.getElementById('aUnits'),true);return false">all</a> &middot;
+    <a href="#" onclick="pickAll(document.getElementById('aUnits'),false);return false">none</a></div>
+  <div id="aUnits"></div>
+  <button class="btn btn-blue btn-sm" onclick="assignMany()">Send to the chosen units</button>
+  <p class="hint">Each unit fetches the clip on its next heartbeat and checks it before it replaces anything.
+     Units that are off get it when they are back; a download cut short carries on where it stopped.</p>
+</div>
+<div class="card">
+  <h3>Library</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Clip</th><th>Size</th><th class="hide-narrow">Added</th><th>Used by</th><th></th></tr></thead>
+    <tbody id="lib"></tbody>
+  </table></div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+async function upload() {
+  const f = document.getElementById('file').files[0];
+  const st = document.getElementById('upSt');
+  if (!f) { st.textContent = 'Choose a file first.'; return; }
+  const bar = document.getElementById('upBar'), fill = bar.firstElementChild, btn = document.getElementById('upBtn');
+  btn.disabled = true; bar.style.display = 'block'; fill.style.width = '0';
+  try {
+    const d = await uploadRaw('/api/library', f, function (done, total) {
+      fill.style.width = (100 * done / total) + '%'; st.textContent = mb(done) + ' of ' + mb(total);
+    });
+    st.textContent = d.duplicate ? 'Already in the library as ' + d.filename + '.' : 'Added.';
+    toast('Clip added', true); load();
+  } catch (e) { st.textContent = 'Not added: ' + e.message; }
+  btn.disabled = false;
+}
+async function assignMany() {
+  const sha = document.getElementById('aClip').value, slot = document.getElementById('aSlot').value;
+  const ids = picked(document.getElementById('aUnits'));
+  if (!sha) { toast('Add a clip to the library first', false); return; }
+  if (!ids.length) { toast('Choose at least one unit', false); return; }
+  try { await postJSON('/api/assign', {sha256: sha, slot: slot, units: ids}); toast('Sent to ' + ids.length + ' unit(s)', true); load(); }
+  catch (e) { toast(e.message, false); }
+}
+async function del(sha, name) {
+  if (!confirm('Delete ' + name + ' from the library? Players keep the copies they have.')) return;
+  try { await postJSON('/api/library/' + sha + '/delete'); load(); } catch (e) { toast(e.message, false); }
+}
+function renderLib(d) {
+  const sel = document.getElementById('aClip'); const keep = sel.value; sel.textContent = '';
+  const body = document.getElementById('lib'); body.textContent = '';
+  (d.clips || []).forEach(function (c) {
+    sel.appendChild(new Option(c.filename + '  (' + mb(c.size) + ')', c.sha256));
+    const tr = el('tr');
+    const n = el('td'); n.appendChild(el('div', c.filename)); n.appendChild(el('div', c.sha256.slice(0, 16) + '…', 'hint mono')); tr.appendChild(n);
+    tr.appendChild(el('td', mb(c.size)));
+    tr.appendChild(el('td', c.added || '', 'hint hide-narrow'));
+    tr.appendChild(el('td', c.used.length ? c.used.map(function (x) { return x.name + ' / ' + (SLOT_NAMES[x.slot] || x.slot); }).join(', ') : '—', 'hint'));
+    const a = el('td'); const b = el('button', 'Delete', 'btn btn-red btn-sm'); b.disabled = c.used.length > 0;
+    b.title = c.used.length ? 'Assigned - unassign it first' : ''; b.onclick = function () { del(c.sha256, c.filename); };
+    a.appendChild(b); tr.appendChild(a);
+    body.appendChild(tr);
+  });
+  if (!(d.clips || []).length) { const tr = el('tr'); const td = el('td', 'The library is empty.', 'hint'); td.colSpan = 5; tr.appendChild(td); body.appendChild(tr); }
+  if (keep) sel.value = keep;
+  document.getElementById('disk').textContent = d.disk ? ('Space on this manager: ' + (d.disk.free_mb / 1024).toFixed(1) + ' GB free.') : '';
+}
+async function load() {
+  try {
+    renderLib(await (await fetch('/api/library')).json());
+    renderPicker(document.getElementById('aUnits'), (await (await fetch('/api/units')).json()).units || []);
+  } catch (e) {}
+}
+document.querySelectorAll('#aSlot option').forEach(function (o) { o.textContent = SLOT_NAMES[o.value] || o.value; });
+load();
+</script>
+{% endblock %}

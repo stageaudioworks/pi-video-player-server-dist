@@ -1,0 +1,11 @@
+[Unit]
+Description=Stage Audio Works central manager - watch for an update request from its web page
+
+[Path]
+# The manager (user saw-manager) writes this file; the update runs as root.
+# Its content is one word, check or update - see self-update.sh.
+PathExists=/var/lib/saw-manager/self-update-request
+Unit=saw-manager-update.service
+
+[Install]
+WantedBy=multi-user.target

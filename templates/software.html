@@ -1,0 +1,159 @@
+{% extends "layout.html" %}
+{% block title %}Software{% endblock %}
+{% block body %}
+<div class="card">
+  <h3>This manager</h3>
+  <div class="row">
+    <span>Runs <b id="selfVer">v{{ version }}</b>.</span>
+    <button class="btn btn-blue btn-sm" id="selfCheck" onclick="selfAsk('check')">Check for updates</button>
+    <button class="btn btn-green btn-sm" id="selfUpdate" onclick="selfAsk('update')" style="display:none">Update now</button>
+    <span id="selfSt" class="hint"></span>
+  </div>
+  <p class="hint" id="selfHint">From the published release on GitHub - this machine needs internet access. Settings,
+     the library and the units are kept. The page goes away for a few seconds while the manager restarts; the
+     players carry on as they are.</p>
+  <pre id="selfLog" class="mono hint" style="display:none;max-height:220px;overflow:auto;background:var(--subtle);padding:8px;border-radius:6px;white-space:pre-wrap"></pre>
+</div>
+<div class="card">
+  <h3>Player versions</h3>
+  <p class="hint">For units that cannot reach GitHub themselves. The manager fetches the published release (it needs
+     internet access), or you upload the player script by hand. Units v{{ min_version }} and later can be updated
+     from here; a unit never installs an older version, or the same one again.</p>
+  <div class="row">
+    <button class="btn btn-blue btn-sm" id="ghBtn" onclick="fromGithub()">Get the latest release from GitHub</button>
+    <span class="hint">or</span>
+    <input type="file" id="pfile" accept=".py">
+    <button class="btn btn-green btn-sm" onclick="uploadPlayer()">Upload</button>
+    <span id="pst" class="hint"></span>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>Version</th><th>From</th><th class="hide-narrow">Added</th><th>Target of</th><th></th></tr></thead>
+    <tbody id="players"></tbody>
+  </table></div>
+</div>
+<div class="card">
+  <h3>Update players</h3>
+  <div class="row">
+    <span class="hint">Install</span><select id="pTarget"></select><span class="hint">on</span>
+  </div>
+  <div class="row hint"><a href="#" onclick="pickAll(document.getElementById('pUnits'),true);return false">all</a> &middot;
+    <a href="#" onclick="pickAll(document.getElementById('pUnits'),false);return false">none</a></div>
+  <div id="pUnits"></div>
+  <button class="btn btn-blue btn-sm" onclick="setTargets()">Update the chosen units</button>
+  <p class="hint">Each unit updates on its next heartbeat, not while a trigger is playing, and restarts with the new
+     version - about 10 seconds without video. Pick a quiet moment.</p>
+</div>
+<div class="card">
+  <h3>Units</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Unit</th><th>Group</th><th>Runs</th><th>Update</th></tr></thead>
+    <tbody id="uv"></tbody>
+  </table></div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+async function fromGithub() {
+  const st = document.getElementById('pst'), b = document.getElementById('ghBtn');
+  b.disabled = true; st.textContent = 'Asking GitHub...';
+  try { const d = await postJSON('/api/players/github'); st.textContent = d.duplicate ? 'v' + d.version + ' is already here.' : 'v' + d.version + ' added.'; load(); }
+  catch (e) { st.textContent = e.message; }
+  b.disabled = false;
+}
+async function uploadPlayer() {
+  const f = document.getElementById('pfile').files[0], st = document.getElementById('pst');
+  if (!f) { st.textContent = 'Choose the player script (RPi_Video_Player_vNN.py) first.'; return; }
+  try { const d = await uploadRaw('/api/players', f); st.textContent = d.duplicate ? 'v' + d.version + ' is already here.' : 'v' + d.version + ' added.'; load(); }
+  catch (e) { st.textContent = 'Not added: ' + e.message; }
+}
+async function delPlayer(sha, v) {
+  if (!confirm('Delete v' + v + ' from the manager? Units keep whatever they run.')) return;
+  try { await postJSON('/api/players/' + sha + '/delete'); load(); } catch (e) { toast(e.message, false); }
+}
+async function setTargets() {
+  const sha = document.getElementById('pTarget').value, ids = picked(document.getElementById('pUnits'));
+  if (!ids.length) { toast('Choose at least one unit', false); return; }
+  const sel = document.getElementById('pTarget');
+  if (!confirm((sha ? 'Update ' + ids.length + ' unit(s) to ' + sel.options[sel.selectedIndex].text : 'Clear the update for ' + ids.length + ' unit(s)') + '?')) return;
+  try { await postJSON('/api/update', {sha256: sha || null, units: ids}); toast('Done - units update on their next heartbeat', true); load(); }
+  catch (e) { toast(e.message, false); }
+}
+async function load() {
+  try {
+    const p = (await (await fetch('/api/players')).json()).players || [];
+    const body = document.getElementById('players'); body.textContent = '';
+    const sel = document.getElementById('pTarget'); const keep = sel.value; sel.textContent = '';
+    p.forEach(function (x) {
+      sel.appendChild(new Option('v' + x.version, x.sha256));
+      const tr = el('tr');
+      const v = el('td'); v.appendChild(el('div', 'v' + x.version)); v.appendChild(el('div', x.sha256.slice(0, 16) + '…', 'hint mono')); tr.appendChild(v);
+      tr.appendChild(el('td', x.source, 'hint'));
+      tr.appendChild(el('td', x.added, 'hint hide-narrow'));
+      tr.appendChild(el('td', x.used.length ? x.used.join(', ') : '—', 'hint'));
+      const a = el('td'); const b = el('button', 'Delete', 'btn btn-red btn-sm'); b.disabled = x.used.length > 0;
+      b.onclick = function () { delPlayer(x.sha256, x.version); }; a.appendChild(b); tr.appendChild(a);
+      body.appendChild(tr);
+    });
+    sel.appendChild(new Option('(clear the update)', ''));
+    if (keep) sel.value = keep;
+    if (!p.length) { const tr = el('tr'); const td = el('td', 'No player versions here yet.', 'hint'); td.colSpan = 5; tr.appendChild(td); body.appendChild(tr); }
+    const units = (await (await fetch('/api/units')).json()).units || [];
+    renderPicker(document.getElementById('pUnits'), units);
+    const uv = document.getElementById('uv'); uv.textContent = '';
+    units.forEach(function (u) {
+      const tr = el('tr');
+      tr.appendChild(el('td', unitName(u)));
+      tr.appendChild(el('td', u.group || '—', 'hint'));
+      tr.appendChild(el('td', u.version ? 'v' + u.version : '?'));
+      const s = el('td');
+      if (u.update) s.appendChild(el('span', 'v' + u.update.version + ': ' + u.update.text, 'badge ' + ({ok: 't-ok', fetching: 't-info', failed: 't-err', pending: 't-warn'}[u.update.state] || 't-off')));
+      else s.appendChild(el('span', '—', 'hint'));
+      tr.appendChild(s); uv.appendChild(tr);
+    });
+  } catch (e) {}
+}
+/* ── This manager: its update job ── */
+let selfFirst = null, selfBusy = false, selfTimer = null;
+function selfShow(d) {
+  const st = document.getElementById('selfSt'), log = document.getElementById('selfLog');
+  const chk = document.getElementById('selfCheck'), upd = document.getElementById('selfUpdate');
+  document.getElementById('selfVer').textContent = 'v' + d.installed;
+  if (selfFirst === null) selfFirst = d.installed;
+  if (d.installed !== selfFirst) { toast('Updated to v' + d.installed, true); selfFirst = d.installed; }
+  if (!d.available) {
+    chk.style.display = 'none'; upd.style.display = 'none';
+    document.getElementById('selfHint').textContent = d.reason;
+    st.textContent = ''; log.style.display = 'none';
+    return;
+  }
+  const s = d.state || {};
+  selfBusy = d.running || d.pending;
+  chk.disabled = selfBusy; upd.disabled = selfBusy;
+  upd.style.display = (!selfBusy && d.newer) ? '' : 'none';
+  if (d.newer) upd.textContent = 'Update to v' + s.available;
+  if (d.pending) st.textContent = 'Asked - starting...';
+  else if (s.state) {
+    st.textContent = (s.state === 'running' ? 'Working: ' : s.state === 'failed' ? 'Failed: ' : '') + (s.message || s.state);
+    st.style.color = s.state === 'failed' ? 'var(--err-fg)' : '';
+  } else st.textContent = '';
+  const showLog = (selfBusy || s.state === 'failed' || (s.action === 'update' && s.state === 'done')) && d.log && d.log.length;
+  log.style.display = showLog ? '' : 'none';
+  if (showLog) { log.textContent = d.log.join(String.fromCharCode(10)); log.scrollTop = log.scrollHeight; }
+}
+async function loadSelf() {
+  try { selfShow(await (await fetch('/api/self')).json()); }
+  catch (e) { document.getElementById('selfSt').textContent = 'The manager is restarting...'; selfBusy = true; }
+  clearTimeout(selfTimer);
+  selfTimer = setTimeout(loadSelf, selfBusy ? 2000 : 15000);
+}
+async function selfAsk(action) {
+  if (action === 'update' && !confirm('Update this manager now? The page goes away for a few seconds while it restarts. The players carry on as they are.')) return;
+  try { selfShow(await postJSON('/api/self/' + action)); } catch (e) { toast(e.message, false); }
+  clearTimeout(selfTimer); selfTimer = setTimeout(loadSelf, 1500);
+}
+
+load();
+loadSelf();
+setInterval(function () { if (!document.hidden) load(); }, 5000);
+</script>
+{% endblock %}

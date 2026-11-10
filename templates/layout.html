@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}{% endblock %} - {{ name }} - SAW manager</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='manager.css') }}">
+<script>
+(function(){var t=null;try{t=localStorage.getItem('sawTheme');}catch(e){}
+if(t!=='dark'&&t!=='light'){t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';}
+document.documentElement.setAttribute('data-theme',t);})();
+</script>
+</head>
+<body>
+<header>
+  <h1>SAW manager &middot; {{ name }}</h1>
+  <nav>
+    <a href="/" class="{{ 'here' if page == 'units' }}">Units</a>
+    <a href="/content" class="{{ 'here' if page == 'content' }}">Content</a>
+    <a href="/software" class="{{ 'here' if page == 'software' }}">Software</a>
+  </nav>
+  <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()">Theme</button>
+</header>
+<div id="toast"></div>
+{% block body %}{% endblock %}
+<footer>Stage Audio Works video player &middot; central manager v{{ version }}</footer>
+<script src="{{ url_for('static', filename='manager.js') }}"></script>
+{% block script %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,141 @@
+{% extends "layout.html" %}
+{% block title %}Unit{% endblock %}
+{% block body %}
+<div class="card">
+  <div class="row" style="justify-content:space-between">
+    <h3 style="margin:0" id="uname">&hellip;</h3>
+    <span id="ustatus"></span>
+  </div>
+  <div class="hint mono" id="uinfo"></div>
+  <div class="row" style="margin-top:10px">
+    <a class="btn btn-blue btn-sm off" id="uopen" target="_blank" rel="noopener">Open web UI</a>
+    <label for="ugroup" class="hint" style="margin-left:12px">Group</label>
+    <input id="ugroup" list="groups" maxlength="40" placeholder="e.g. Gallery wing" style="width:200px">
+    <datalist id="groups"></datalist>
+    <button class="btn btn-green btn-sm" onclick="saveGroup()">Save</button>
+    <button class="btn btn-red btn-sm" onclick="forget()" style="margin-left:auto">Forget this unit</button>
+  </div>
+</div>
+<div class="card">
+  <h3>Remote controls</h3>
+  <div id="controls"></div>
+  <div class="row" style="margin-top:10px">
+    <label for="vol" class="hint">Volume</label>
+    <input type="range" id="vol" min="0" max="100" step="1" style="width:200px" oninput="document.getElementById('volv').textContent=this.value">
+    <span id="volv" class="mono">-</span>
+    <button class="btn btn-grey btn-sm" onclick="setVolume()">Set</button>
+  </div>
+</div>
+<div class="card">
+  <h3>Slots</h3>
+  <p class="hint">Choose the clip each slot should hold. The unit fetches it on its next heartbeat (resuming if the
+     network drops) and puts it on screen if it is the loop. "Not managed" leaves the slot to the unit's own web UI,
+     and keeps whatever it has.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Slot</th><th>Should hold</th><th>Holds now</th><th>State</th></tr></thead>
+    <tbody id="slots"></tbody>
+  </table></div>
+</div>
+<div class="card">
+  <h3>Software</h3>
+  <div class="row">
+    <span>Runs <b id="uver">-</b>.</span>
+    <label for="target" class="hint" style="margin-left:12px">Update to</label>
+    <select id="target"></select>
+    <span id="ustate"></span>
+  </div>
+  <p class="hint">A unit only ever installs a newer version than it runs, and not while a trigger is playing.
+     It restarts with the new version - about 10 seconds without video.</p>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+const UID = {{ uid|tojson }};
+let clips = [], players = [], unit = null;
+
+function clipName(sha, name) { return name || (sha ? sha.slice(0, 12) + '… (not in the library)' : '—'); }
+
+async function assign(slot, sha) {
+  try { await postJSON('/api/units/' + encodeURIComponent(UID) + '/assign', {slot: slot, sha256: sha || null}); toast('Saved - the unit picks it up within 10 s', true); load(); }
+  catch (e) { toast(e.message, false); }
+}
+async function saveGroup() {
+  try { const d = await postJSON('/api/units/' + encodeURIComponent(UID) + '/group', {group: document.getElementById('ugroup').value}); toast(d.group ? 'Group: ' + d.group : 'No group', true); }
+  catch (e) { toast(e.message, false); }
+}
+async function setTarget(sha) {
+  try { await postJSON('/api/update', {units: [UID], sha256: sha || null}); toast(sha ? 'The unit updates on its next heartbeat' : 'No update set', true); load(); }
+  catch (e) { toast(e.message, false); }
+}
+function setVolume() { command([UID], 'volume', 'Volume ' + document.getElementById('vol').value, {volume: parseInt(document.getElementById('vol').value, 10)}); }
+async function forget() {
+  if (!confirm('Forget this unit? It disappears from the list and its assignments are dropped. If it still has this manager set, it joins again on its next heartbeat.')) return;
+  try { await postJSON('/api/units/' + encodeURIComponent(UID) + '/forget'); location.href = '/'; } catch (e) { toast(e.message, false); }
+}
+
+function render(u, groups) {
+  unit = u;
+  document.getElementById('uname').textContent = unitName(u);
+  document.title = unitName(u) + ' - SAW manager';
+  const st = document.getElementById('ustatus'); st.textContent = '';
+  st.appendChild(el('span', u.status_text, 'pill t-' + u.status_tone));
+  document.getElementById('uinfo').textContent = u.id + ' · ' + (u.hostname || '') + ' · ' + (u.address || 'no address') +
+    (u.remote && u.remote !== u.address ? ' (seen from ' + u.remote + ')' : '') + ' · joined ' + (u.first_seen || '');
+  const open = document.getElementById('uopen');
+  if (u.web_url) { open.href = u.web_url; open.classList.remove('off'); }
+  const g = document.getElementById('ugroup');
+  if (document.activeElement !== g && !g.dataset.loaded) { g.value = u.group || ''; g.dataset.loaded = '1'; }
+  const dl = document.getElementById('groups'); dl.textContent = '';
+  groups.forEach(function (x) { dl.appendChild(new Option(x)); });
+  const vol = document.getElementById('vol');
+  if (!vol.dataset.loaded && u.status && u.status.volume !== null && u.status.volume !== undefined) {
+    vol.value = u.status.volume; document.getElementById('volv').textContent = u.status.volume; vol.dataset.loaded = '1';
+  }
+  document.getElementById('uver').textContent = u.version ? 'v' + u.version : 'an unknown version';
+  const tsel = document.getElementById('target');
+  if (document.activeElement !== tsel) {
+    tsel.textContent = '';
+    tsel.appendChild(new Option('No update set', ''));
+    players.forEach(function (p) { tsel.appendChild(new Option('v' + p.version + (u.version && p.version <= u.version ? ' (not newer - ignored)' : ''), p.sha256)); });
+    tsel.value = u.update ? u.update.sha256 : '';
+    tsel.onchange = function () { setTarget(tsel.value); };
+  }
+  const us = document.getElementById('ustate'); us.textContent = '';
+  if (u.update) us.appendChild(el('span', u.update.text, 'badge ' + ({ok: 't-ok', fetching: 't-info', failed: 't-err', pending: 't-warn'}[u.update.state] || 't-off')));
+
+  const body = document.getElementById('slots');
+  if (body.contains(document.activeElement)) return;   // the operator is choosing
+  body.textContent = '';
+  u.slots.forEach(function (s) {
+    const tr = el('tr');
+    tr.appendChild(el('td', SLOT_NAMES[s.slot] || s.slot));
+    const td = el('td'); const sel = el('select');
+    sel.appendChild(new Option('Not managed', ''));
+    clips.forEach(function (c) { sel.appendChild(new Option(c.filename + '  (' + mb(c.size) + ')', c.sha256)); });
+    if (s.assigned && !clips.some(function (c) { return c.sha256 === s.assigned; })) sel.appendChild(new Option(clipName(s.assigned, s.assigned_name), s.assigned));
+    sel.value = s.assigned || '';
+    sel.onchange = function () { assign(s.slot, sel.value); };
+    td.appendChild(sel); tr.appendChild(td);
+    tr.appendChild(el('td', s.have ? clipName(s.have, s.have_name) + (s.have_size ? '  (' + mb(s.have_size) + ')' : '') : (u.seen ? 'empty' : '—'), 'hint'));
+    const tone = {ok: 't-ok', fetching: 't-info', pending: 't-warn', failed: 't-err', unmanaged: 't-off'}[s.sync] || 't-off';
+    const stc = el('td'); stc.appendChild(el('span', s.sync_text, 'badge ' + tone)); tr.appendChild(stc);
+    body.appendChild(tr);
+  });
+}
+
+async function load() {
+  try {
+    clips = (await (await fetch('/api/library')).json()).clips || [];
+    players = (await (await fetch('/api/players')).json()).players || [];
+    const d = await (await fetch('/api/units')).json();
+    const u = (d.units || []).filter(function (x) { return x.id === UID; })[0];
+    if (!u) { document.getElementById('uname').textContent = 'This unit is no longer known here.'; return; }
+    render(u, d.groups || []);
+  } catch (e) {}
+}
+
+document.getElementById('controls').appendChild(controlBar(function () { return [UID]; }, ''));
+load();
+setInterval(function () { if (!document.hidden) load(); }, 3000);
+</script>
+{% endblock %}

@@ -1,0 +1,185 @@
+{% extends "layout.html" %}
+{% block title %}Units{% endblock %}
+{% block body %}
+<div class="card">
+  <div class="row" style="justify-content:space-between">
+    <h3 style="margin:0">All units <span id="count" class="hint"></span></h3>
+    <span id="summary" class="hint"></span>
+  </div>
+  <div id="allControls"></div>
+  <p class="hint" style="margin:8px 0 0">Remote controls act within a second on units that are online.
+     A command waits at most 30 seconds - a unit that is offline does not play a trigger later.</p>
+</div>
+<div class="card">
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Unit</th><th>Status</th><th>Content</th><th class="hide-narrow">Health</th><th>Version</th><th class="hide-narrow">Last seen</th><th></th></tr></thead>
+    <tbody id="units"><tr><td colspan="7" class="hint">Loading&hellip;</td></tr></tbody>
+  </table>
+  </div>
+</div>
+<div class="card">
+  <h3>Recent commands</h3>
+  <table class="activity"><tbody id="activity"><tr><td class="hint">None yet.</td></tr></tbody></table>
+</div>
+<div class="card">
+  <h3>Adding a player</h3>
+  <p class="hint" style="margin:0">Open the player's web UI (v23 or later), go to <b>Central Manager</b>, enter
+  <b class="mono">{{ join }}</b> and press <b>Join</b>. It appears here within 10 seconds.
+  To put it in a group, open it here with <b>Manage</b>.</p>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+let current = [];
+function idsOf(filter) { return current.filter(filter).map(function (u) { return u.id; }); }
+
+function syncBadges(slots) {
+  const td = el('td');
+  const counts = {ok: 0, pending: 0, fetching: 0, failed: 0};
+  slots.forEach(function (s) { if (s.sync in counts) counts[s.sync]++; });
+  if (counts.ok) td.appendChild(el('span', counts.ok + ' in place', 'badge t-ok'));
+  if (counts.fetching) {
+    const f = slots.filter(function (s) { return s.sync === 'fetching'; })[0];
+    td.appendChild(el('span', SLOT_NAMES[f.slot] + ' ' + f.sync_text, 'badge t-info'));
+  }
+  if (counts.pending) td.appendChild(el('span', counts.pending + ' waiting', 'badge t-warn'));
+  if (counts.failed) td.appendChild(el('span', counts.failed + ' failed', 'badge t-err'));
+  if (!counts.ok && !counts.pending && !counts.fetching && !counts.failed) td.appendChild(el('span', 'not managed', 'hint'));
+  return td;
+}
+
+function healthCell(u) {
+  const td = el('td', null, 'hide-narrow');
+  const h = u.health || {};
+  if (!u.online) return td;
+  if (h.undervoltage) td.appendChild(el('span', 'Under-voltage now', 'badge t-err'));
+  else if (h.undervoltage_since_boot) td.appendChild(el('span', 'Under-voltage since boot', 'badge t-warn'));
+  if (h.temp_c !== null && h.temp_c !== undefined)
+    td.appendChild(el('span', h.temp_c + ' °C', 'badge ' + (h.temp_c >= 80 ? 't-err' : h.temp_c >= 70 ? 't-warn' : 't-off')));
+  if (h.disk_free_mb !== null && h.disk_free_mb !== undefined)
+    td.appendChild(el('span', (h.disk_free_mb / 1024).toFixed(1) + ' GB free', 'badge ' + (h.disk_free_mb < 1024 ? 't-warn' : 't-off')));
+  return td;
+}
+
+function versionCell(u) {
+  const td = el('td');
+  td.appendChild(el('span', u.version ? 'v' + u.version : ''));
+  if (u.update && u.update.state !== 'ok') {
+    const tone = {fetching: 't-info', failed: 't-err', pending: 't-warn'}[u.update.state] || 't-off';
+    const b = el('span', '→ v' + u.update.version, 'badge ' + tone);
+    b.title = u.update.text;
+    td.appendChild(document.createTextNode(' '));
+    td.appendChild(b);
+  }
+  return td;
+}
+
+/* Rows are kept between refreshes and only their contents updated: the table
+   refreshes every 2 s, and a button rebuilt between the press and the release
+   of a click loses the click. Rows move only when the order changes. */
+const rows = {};
+let order = '';
+
+function infoCells(u) {
+  const name = el('td');
+  name.appendChild(el('div', unitName(u)));
+  name.appendChild(el('div', (u.hostname ? u.hostname + ' · ' : '') + (u.address || ''), 'hint mono'));
+  const st = el('td');
+  st.appendChild(el('span', u.status_text, 'pill t-' + u.status_tone));
+  if (u.online && u.status && u.status.video) st.appendChild(el('div', u.status.video, 'hint mono'));
+  return [name, st, syncBadges(u.slots), healthCell(u), versionCell(u),
+          el('td', u.seen ? ago(u.last_seen_ago) : 'not since restart', 'hint hide-narrow')];
+}
+
+function unitRow(u) {
+  let r = rows['u:' + u.id];
+  if (!r) {
+    const tr = el('tr');
+    const cells = infoCells(u);
+    cells.forEach(function (c) { tr.appendChild(c); });
+    const act = el('td'); act.style.whiteSpace = 'nowrap';
+    const open = el('a', 'Open web UI', 'btn btn-blue btn-sm');
+    open.target = '_blank'; open.rel = 'noopener';
+    act.appendChild(open); act.appendChild(document.createTextNode(' '));
+    const manage = el('a', 'Manage', 'btn btn-grey btn-sm'); manage.href = '/unit/' + encodeURIComponent(u.id);
+    act.appendChild(manage);
+    tr.appendChild(act);
+    r = rows['u:' + u.id] = {tr: tr, cells: cells, open: open};
+  } else {
+    infoCells(u).forEach(function (c, i) { r.cells[i].replaceWith(c); r.cells[i] = c; });
+  }
+  if (u.web_url) { r.open.href = u.web_url; r.open.classList.remove('off'); }
+  else { r.open.removeAttribute('href'); r.open.classList.add('off'); }
+  return r.tr;
+}
+
+function groupRow(g, units) {
+  let r = rows['g:' + g];
+  if (!r) {
+    const tr = el('tr', null, 'group-row');
+    const td = el('td'); td.colSpan = 7;
+    const head = el('div', null, 'row'); head.style.marginBottom = '0';
+    const label = el('span');
+    head.appendChild(label);
+    head.appendChild(controlBar(function () { return idsOf(function (x) { return x.group === g; }); }, g || 'no group'));
+    td.appendChild(head); tr.appendChild(td);
+    r = rows['g:' + g] = {tr: tr, label: label};
+  }
+  const n = units.filter(function (x) { return x.group === g; });
+  r.label.textContent = (g || 'No group') + '  (' + n.filter(function (x) { return x.online; }).length + '/' + n.length + ' online)';
+  return r.tr;
+}
+
+function render(d) {
+  const units = d.units || [];
+  current = units;
+  const body = document.getElementById('units');
+  const grouped = units.some(function (u) { return u.group; });
+  const want = [], keys = [];
+  let lastGroup = null;
+  units.forEach(function (u) {
+    if (grouped && u.group !== lastGroup) {
+      lastGroup = u.group;
+      want.push(groupRow(u.group, units)); keys.push('g:' + u.group);
+    }
+    want.push(unitRow(u)); keys.push('u:' + u.id);
+  });
+  Object.keys(rows).forEach(function (k) { if (keys.indexOf(k) < 0) delete rows[k]; });
+  if (keys.join('|') !== order || !units.length) {
+    order = keys.join('|');
+    body.textContent = '';
+    want.forEach(function (tr) { body.appendChild(tr); });
+    if (!units.length) {
+      const tr = el('tr'); const td = el('td', 'No units yet - see "Adding a player" below.', 'hint'); td.colSpan = 7;
+      tr.appendChild(td); body.appendChild(tr);
+    }
+  }
+  const online = units.filter(function (u) { return u.online; }).length;
+  document.getElementById('count').textContent = units.length ? '(' + units.length + ')' : '';
+  document.getElementById('summary').textContent = units.length ? (online + ' online, ' + (units.length - online) + ' not') : '';
+  const act = document.getElementById('activity');
+  act.textContent = '';
+  (d.activity || []).forEach(function (a) {
+    const tr = el('tr');
+    tr.appendChild(el('td', a.at.slice(11), 'hint mono'));
+    tr.appendChild(el('td', a.name));
+    tr.appendChild(el('td', a.label));
+    const s = el('td');
+    s.appendChild(el('span', a.state, 'badge ' + ({done: 't-ok', sent: 't-info', queued: 't-info', failed: 't-err', expired: 't-warn'}[a.state] || 't-off')));
+    if (a.message) s.appendChild(el('span', a.message, 'hint'));
+    tr.appendChild(s);
+    act.appendChild(tr);
+  });
+  if (!(d.activity || []).length) { const tr = el('tr'); tr.appendChild(el('td', 'None yet.', 'hint')); act.appendChild(tr); }
+}
+
+async function load() {
+  try { render(await (await fetch('/api/units')).json()); } catch (e) {}
+}
+
+document.getElementById('allControls').appendChild(controlBar(function () { return idsOf(function () { return true; }); }, 'all units'));
+load();
+setInterval(function () { if (!document.hidden) load(); }, 2000);
+</script>
+{% endblock %}
