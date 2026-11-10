@@ -17,7 +17,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 """
-Stage Audio Works central manager  (v2)
+Stage Audio Works central manager  (v3)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 One page listing every player that has joined, live, in groups; remote
@@ -55,7 +55,10 @@ Environment (saw-manager.service; the password in /etc/saw-manager/manager.env):
   SAW_MANAGER_DATA      data directory           (/var/lib/saw-manager)
   SAW_MANAGER_PORT      port                     (5080)
   SAW_MANAGER_NAME      name shown on the units  (the hostname)
-  SAW_MANAGER_PASSWORD  if set, the pages ask for it (any user name). The
+  SAW_MANAGER_PASSWORD  (v1/v2 only) the pages' password in plain text. From v3 the
+                        password is a salted PBKDF2 hash in <data>/auth.json,
+                        set by install.sh (it asks) or from the Software page;
+                        this is used only while there is no auth.json. The
                         units' API (/api/v1/) uses the unit keys instead.
 
 Operator routes (pages and their API; every POST needs the X-SAW header, which
@@ -73,6 +76,7 @@ a page on another site cannot send without the browser asking first):
   /api/players/github        POST  fetch the latest published player release
   /api/players/<sha>/delete  POST
   /api/update                POST  {"sha256" | null, "units": [ids]}
+  /api/password              GET   is one set;  POST {"current", "new"} change it
   /api/self                  GET   this manager's version and its update job's state
   /api/self/check|update     POST  ask the root update job (self-update.sh) to check
                                    or update - the request is one word, nothing else
@@ -94,6 +98,7 @@ import re
 import secrets
 import shutil
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -104,13 +109,16 @@ from urllib.parse import unquote
 
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file
 
-MANAGER_VERSION = 2
+MANAGER_VERSION = 3
 PROTOCOL        = 1
 
 DATA_DIR  = os.environ.get("SAW_MANAGER_DATA", "/var/lib/saw-manager")
 PORT      = int(os.environ.get("SAW_MANAGER_PORT", "5080"))
 NAME      = (os.environ.get("SAW_MANAGER_NAME", "").strip() or socket.gethostname())[:64]
-PASSWORD  = os.environ.get("SAW_MANAGER_PASSWORD", "")
+ENV_PASSWORD = os.environ.get("SAW_MANAGER_PASSWORD", "")   # v1/v2 installs, until migrated
+AUTH_FILE       = "auth.json"
+AUTH_ITERATIONS = 200_000
+PASSWORD_MIN, PASSWORD_MAX = 8, 128
 
 INTERVAL_S       = 10        # told to every unit in each reply
 OFFLINE_AFTER_S  = 35        # three heartbeats missed, and a little
@@ -698,13 +706,96 @@ def fetch_github_player() -> dict:
 # THE OPERATOR'S PAGES AND API
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── The pages' password ───────────────────────────────────────────────────────
+# A salted PBKDF2-SHA256 hash in <data>/auth.json (the service's own directory:
+# it cannot write /etc). Set by install.sh, which asks for it, or from the
+# Software page. Checking a password costs PBKDF2 once; the dashboard polls
+# every 2 s, so the last password that checked out against this hash is
+# remembered as a cheap salted digest - a change of password changes the hash
+# and forgets it. While there is no auth.json, SAW_MANAGER_PASSWORD (v1/v2)
+# is used; install.sh moves it into auth.json on the next update.
+
+_auth_ok = {"hash": None, "digest": None}
+
+
+def _auth_path(data_dir: Optional[str] = None) -> str:
+    return os.path.join(data_dir or (store.dir if store else DATA_DIR), AUTH_FILE)
+
+
+def load_auth(data_dir: Optional[str] = None) -> Optional[dict]:
+    try:
+        with open(_auth_path(data_dir)) as f:
+            a = json.load(f)
+    except (OSError, ValueError):
+        return None
+    ok = (isinstance(a, dict) and a.get("scheme") == "pbkdf2_sha256"
+          and isinstance(a.get("iterations"), int) and isinstance(a.get("salt"), str)
+          and isinstance(a.get("hash"), str))
+    return a if ok else None
+
+
+def password_required() -> bool:
+    return load_auth() is not None or bool(ENV_PASSWORD)
+
+
+def check_password(pw) -> bool:
+    if not isinstance(pw, str):
+        return False
+    a = load_auth()
+    if a is None:
+        return hmac.compare_digest(pw.encode(), ENV_PASSWORD.encode()) if ENV_PASSWORD else True
+    salt = bytes.fromhex(a["salt"])
+    quick = hashlib.sha256(salt + pw.encode()).hexdigest()
+    if _auth_ok["hash"] == a["hash"] and hmac.compare_digest(_auth_ok["digest"] or "", quick):
+        return True
+    good = hmac.compare_digest(
+        hashlib.pbkdf2_hmac("sha256", pw.encode(), salt, a["iterations"]).hex(), a["hash"])
+    if good:
+        _auth_ok.update(hash=a["hash"], digest=quick)
+    return good
+
+
+def password_problem(pw) -> Optional[str]:
+    if not isinstance(pw, str) or len(pw) < PASSWORD_MIN:
+        return "at least %d characters" % PASSWORD_MIN
+    if len(pw) > PASSWORD_MAX:
+        return "at most %d characters" % PASSWORD_MAX
+    if re.search(r"[\x00-\x1f\x7f]", pw):
+        return "no control characters"
+    return None
+
+
+def set_password(pw: str, data_dir: Optional[str] = None):
+    """Hash and store a new password (temp file + rename, mode 600)."""
+    problem = password_problem(pw)
+    if problem:
+        raise ValueError(problem)
+    salt = secrets.token_bytes(16)
+    record = {"scheme": "pbkdf2_sha256", "iterations": AUTH_ITERATIONS, "salt": salt.hex(),
+              "hash": hashlib.pbkdf2_hmac("sha256", pw.encode(), salt, AUTH_ITERATIONS).hex(),
+              "changed": now_iso()}
+    path = _auth_path(data_dir)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".auth.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(record, f)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 @app.before_request
 def _guard():
     if request.path.startswith("/api/v1/"):
         return None                         # units: unit id and key
-    if PASSWORD:
+    if password_required():
         a = request.authorization
-        if not (a and a.password is not None and hmac.compare_digest(a.password, PASSWORD)):
+        if not (a and a.password is not None and check_password(a.password)):
             return Response("Password required", 401,
                             {"WWW-Authenticate": 'Basic realm="SAW manager"'})
     # A page on another site can make the browser POST here, with the cached
@@ -1182,6 +1273,28 @@ def self_view() -> dict:
     return view
 
 
+@app.route("/api/password", methods=["GET"])
+def api_password():
+    a = load_auth()
+    return jsonify({"set": password_required(), "changed": a.get("changed") if a else None})
+
+
+@app.route("/api/password", methods=["POST"])
+def api_password_change():
+    """{"current", "new"}. The current one is asked for even though the browser
+    has just sent it: a page left open on someone else's screen should not be
+    enough to lock everybody out."""
+    data = request.get_json(silent=True) or {}
+    if password_required() and not check_password(data.get("current")):
+        return jsonify({"ok": False, "error": "the current password is not right"}), 403
+    problem = password_problem(data.get("new"))
+    if problem:
+        return jsonify({"ok": False, "error": "the new password needs %s" % problem}), 400
+    set_password(data["new"])
+    logger.info("Password changed from the web page")
+    return jsonify({"ok": True})
+
+
 @app.route("/api/self")
 def api_self():
     return jsonify(self_view())
@@ -1214,10 +1327,26 @@ def init(data_dir: str = DATA_DIR):
     return store
 
 
+def cli_set_password() -> int:
+    """`saw_manager.py --set-password`: one line on stdin -> <data>/auth.json.
+    What install.sh runs (as the service user), so the password never appears
+    on a command line or in the settings file."""
+    pw = sys.stdin.readline().rstrip("\n")
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        set_password(pw, DATA_DIR)
+    except (ValueError, OSError) as e:
+        print("password not set: %s" % e, file=sys.stderr)
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--set-password"]:
+        sys.exit(cli_set_password())
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     init()
     threading.Thread(target=sweeper, daemon=True, name="sweeper").start()
     logger.info("SAW manager v%d (%s) starting on port %d, data in %s%s", MANAGER_VERSION, NAME,
-                PORT, DATA_DIR, "" if PASSWORD else " - NO PASSWORD SET")
+                PORT, DATA_DIR, "" if password_required() else " - NO PASSWORD SET")
     app.run(host="0.0.0.0", port=PORT, threaded=True)

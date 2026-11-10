@@ -15,6 +15,20 @@
   <pre id="selfLog" class="mono hint" style="display:none;max-height:220px;overflow:auto;background:var(--subtle);padding:8px;border-radius:6px;white-space:pre-wrap"></pre>
 </div>
 <div class="card">
+  <h3 id="pwTitle">Password</h3>
+  <p class="hint" id="pwHint">For these pages (any user name). After a change, your browser asks for the new one.</p>
+  <div class="row" id="pwCurRow"><label class="hint" for="pwCur" style="width:150px">Current password</label>
+    <input type="password" id="pwCur" autocomplete="current-password" style="width:220px"></div>
+  <div class="row"><label class="hint" for="pwNew" style="width:150px">New password</label>
+    <input type="password" id="pwNew" autocomplete="new-password" style="width:220px">
+    <span class="hint">at least 8 characters</span></div>
+  <div class="row"><label class="hint" for="pwNew2" style="width:150px">New password, again</label>
+    <input type="password" id="pwNew2" autocomplete="new-password" style="width:220px"
+      onkeydown="if(event.key==='Enter')changePassword()"></div>
+  <button class="btn btn-green btn-sm" id="pwBtn" onclick="changePassword()">Change password</button>
+  <span id="pwSt" class="hint" style="margin-left:8px"></span>
+</div>
+<div class="card">
   <h3>Player versions</h3>
   <p class="hint">For units that cannot reach GitHub themselves. The manager fetches the published release (it needs
      internet access), or you upload the player script by hand. Units v{{ min_version }} and later can be updated
@@ -152,8 +166,37 @@ async function selfAsk(action) {
   clearTimeout(selfTimer); selfTimer = setTimeout(loadSelf, 1500);
 }
 
+/* ── The pages' password ── */
+let pwSet = true;
+async function loadPassword() {
+  try {
+    const d = await (await fetch('/api/password')).json();
+    pwSet = d.set;
+    document.getElementById('pwCurRow').style.display = pwSet ? '' : 'none';
+    document.getElementById('pwTitle').textContent = pwSet ? 'Password' : 'Set a password';
+    document.getElementById('pwBtn').textContent = pwSet ? 'Change password' : 'Set password';
+    if (!pwSet) document.getElementById('pwHint').textContent =
+      'There is no password: anyone on the network can open these pages and control the players. Set one here.';
+  } catch (e) {}
+}
+async function changePassword() {
+  const st = document.getElementById('pwSt');
+  const cur = document.getElementById('pwCur').value, a = document.getElementById('pwNew').value, b = document.getElementById('pwNew2').value;
+  st.style.color = 'var(--err-fg)';
+  if (a.length < 8) { st.textContent = 'The new password needs at least 8 characters.'; return; }
+  if (a !== b) { st.textContent = 'The two new passwords differ.'; return; }
+  try {
+    await postJSON('/api/password', {current: cur, new: a});
+    ['pwCur', 'pwNew', 'pwNew2'].forEach(function (id) { document.getElementById(id).value = ''; });
+    st.style.color = '';
+    st.textContent = 'Changed. Your browser now asks for the new password...';
+    setTimeout(function () { location.reload(); }, 2500);
+  } catch (e) { st.textContent = e.message; }
+}
+
 load();
 loadSelf();
+loadPassword();
 setInterval(function () { if (!document.hidden) load(); }, 5000);
 </script>
 {% endblock %}

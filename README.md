@@ -28,9 +28,16 @@ On the machine that will be the manager, with internet access:
 curl -fsSL https://raw.githubusercontent.com/stageaudioworks/pi-video-player-server-dist/main/bootstrap.sh | sudo bash
 ```
 
-It installs Python's Flask if needed, sets the manager up as a service on port
-**5080**, and prints the dashboard's address and a **password** for it — shown
-once, kept in `/etc/saw-manager/manager.env`. Run the same command again to update.
+It installs Python's Flask if needed, **asks you to choose a password** for the
+web pages (type it twice; press Enter instead for a random one, shown once), sets
+the manager up as a service on port **5080**, and prints the dashboard's address.
+Log in with any user name and that password. Run the same command again to update.
+
+**The password** can be changed on the dashboard: Software → Password. It is
+stored hashed, never in plain text. Forgot it? On the manager:
+`sudo bash /opt/saw-manager-src/install.sh --password` (asks for a new one).
+Installed by automation, with no terminal to ask at, a random password is made and
+printed instead.
 
 Options go after `-s --`:
 
@@ -42,7 +49,9 @@ curl -fsSL https://raw.githubusercontent.com/stageaudioworks/pi-video-player-ser
 |---|---|
 | `--port N` | listen on another port (default 5080) |
 | `--name "..."` | the name the players show for this manager (default: the hostname) |
-| `--new-password` | make a new password and print it |
+| `--password` | choose a new password (asks; needs a terminal) |
+| `--new-password` | make a random password and print it |
+| `--password-file F` | the password from file F, which is removed after reading (for automation) |
 | `--no-password` | first install only: no password (anyone on the network can control the players) |
 | `--uninstall` | remove the service and code; keeps the library and settings |
 | `--uninstall --purge` | remove everything |
@@ -55,11 +64,18 @@ In the Proxmox host's **Shell** (not inside a container):
 bash <(curl -fsSL https://raw.githubusercontent.com/stageaudioworks/pi-video-player-server-dist/main/proxmox-lxc.sh)
 ```
 
-It creates an unprivileged Debian 12 container - 1 core, 512 MB, 32 GB for the
-clip library, starting with the host - installs the manager in it, and prints the
-dashboard's address. The container is tagged `saw-manager`, and its Notes say where
-the dashboard is and how to read the password. **Run the same line again to update
-it**: it finds the container by its tag.
+It **asks for the password first**, right there on the host (Enter for a random
+one), then creates an unprivileged Debian 12 container - 1 core, 512 MB, 32 GB for
+the clip library, starting with the host - installs the manager in it, and prints
+the dashboard's address. The password goes into the container as a file the
+installer reads and deletes, never on a command line. The container is tagged
+`saw-manager`, and its Notes say where the dashboard is. **Run the same line again
+to update it**: it finds the container by its tag. Forgot the password? Run the
+line again with `NEW_PASSWORD=1` in front.
+
+If the container cannot reach the internet, it says which part fails - no
+address, no gateway (usually the wrong bridge or VLAN) or no DNS - and how to fix
+that in place; then run the line again and it carries on in the same container.
 
 Settings go in front, e.g. a fixed address (recommended - the players are given
 this address) on VLAN 20:
@@ -70,7 +86,7 @@ IP=192.0.2.80/24 GW=192.0.2.1 VLAN=20 bash <(curl -fsSL https://raw.githubuserco
 
 `CTID`, `HN` (hostname), `BRIDGE`, `VLAN`, `IP`/`GW`, `STORAGE`, `TEMPLATE_STORE`,
 `DISK` (GB), `CORES`, `RAM` (MB), `DEBIAN_VERSION` (12 or 13), `PORT`, `NAME`,
-`NO_PASSWORD=1`. The library lives inside the container, so Proxmox backups include
+`NO_PASSWORD=1`, `NEW_PASSWORD=1`. The library lives inside the container, so Proxmox backups include
 it. Installing by hand in a container you made yourself also works - give it
 **nesting** (Options → Features), which the service's sandbox needs.
 

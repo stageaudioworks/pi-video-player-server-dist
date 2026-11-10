@@ -21,22 +21,27 @@
 # =============================================================================
 # On a Raspberry Pi (Raspberry Pi OS) or a Linux machine or VM (Debian,
 # Ubuntu; Fedora/RHEL-family on a best-effort basis). Needs systemd and
-# Python 3.9+. Non-interactive - safe under `curl ... | sudo bash` - and safe
-# to run again: it is also the update.
+# Python 3.9+. Safe to run again: it is also the update.
 #
 #   sudo bash install.sh                     install / update, then (re)start
+#   sudo bash install.sh --password          choose a new password (asks; needs a terminal)
+#   sudo bash install.sh --new-password      make a random password and print it
+#   sudo bash install.sh --password-file F   the password from file F (removed after reading)
+#   sudo bash install.sh --no-password       first install only: no password
 #   sudo bash install.sh --port 8080         listen on another port (default 5080)
 #   sudo bash install.sh --name "Museum"     the name the players show
-#   sudo bash install.sh --new-password      make a new password and print it
-#   sudo bash install.sh --no-password       first install only: no password
 #   sudo bash install.sh --uninstall         remove the service and code (keeps data)
 #   sudo bash install.sh --uninstall --purge ...and the library, registry, settings
 #
-# The first install makes a random password for the web pages and prints it
-# once. It is in /etc/saw-manager/manager.env (root and the service only):
-#   sudo cat /etc/saw-manager/manager.env
-# The manager can change what every screen shows, and install software on the
-# players - so it has a password unless you ask for none.
+# The password for the web pages: on a first install at a terminal (the
+# Proxmox Shell, SSH, `curl ... | sudo bash` typed by hand) it asks you to choose
+# one; press Enter for a random one, shown once. Without a terminal (automation,
+# the Update button) it never waits: a first install gets a random one, printed.
+# The question goes to the terminal itself, never to stdin, which under
+# `curl ... | bash` is the script. Stored hashed, in /var/lib/saw-manager/auth.json;
+# change it on the Software page, or with --password. The manager can change
+# every screen and install software on the players - so it has a password
+# unless you ask for none.
 # =============================================================================
 # Intentionally NOT using set -e - `(( ))` that evaluates to 0 would end the
 # script silently (the player project's constraint 6). Errors are handled.
@@ -61,20 +66,47 @@ warn()  { echo -e "${YELLOW}[saw-manager]${NC} $*"; }
 fail()  { echo -e "${RED}[saw-manager] ERROR:${NC} $*" >&2; exit 1; }
 
 OPT_PORT=""; OPT_NAME=""; OPT_NEWPW=false; OPT_NOPW=false; OPT_UNINSTALL=false; OPT_PURGE=false
+OPT_PW=false; OPT_PWFILE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --port)         OPT_PORT="${2:-}"; shift 2 ;;
-        --name)         OPT_NAME="${2:-}"; shift 2 ;;
-        --new-password) OPT_NEWPW=true; shift ;;
-        --no-password)  OPT_NOPW=true; shift ;;
-        --uninstall)    OPT_UNINSTALL=true; shift ;;
-        --purge)        OPT_PURGE=true; shift ;;
-        -h|--help)      sed -n '19,40p' "$0"; exit 0 ;;
+        --port)          OPT_PORT="${2:-}"; shift 2 ;;
+        --name)          OPT_NAME="${2:-}"; shift 2 ;;
+        --password)      OPT_PW=true; shift ;;
+        --password-file) OPT_PWFILE="${2:-}"; shift 2 ;;
+        --new-password)  OPT_NEWPW=true; shift ;;
+        --no-password)   OPT_NOPW=true; shift ;;
+        --uninstall)     OPT_UNINSTALL=true; shift ;;
+        --purge)         OPT_PURGE=true; shift ;;
+        -h|--help)       sed -n '19,46p' "$0"; exit 0 ;;
         *)              fail "unknown option: $1 (see --help)" ;;
     esac
 done
 
 [[ $EUID -eq 0 ]] || fail "run as root: sudo bash install.sh"
+
+random_pw() { head -c 18 /dev/urandom | base64 | tr -d '/+=' | head -c 16; }
+
+# ask_password: at the terminal itself (/dev/tty), twice. Sets NEWPW to the
+# chosen password, or to "" when Enter was pressed (the caller makes a random
+# one). Returns 1, asking nothing, when there is no terminal - a piped or
+# systemd run never waits.
+ask_password() {
+    local a b
+    NEWPW=""
+    { exec 3<>/dev/tty; } 2>/dev/null || return 1
+    while true; do
+        printf 'Choose a password for the manager'"'"'s web pages (8+ characters; Enter for a random one): ' >&3
+        IFS= read -r -s a <&3; printf '\n' >&3
+        [[ -n "${a}" ]] || break
+        if (( ${#a} < 8 )); then printf 'At least 8 characters, please.\n' >&3; continue; fi
+        printf 'The same again: ' >&3
+        IFS= read -r -s b <&3; printf '\n' >&3
+        if [[ "${a}" == "${b}" ]]; then NEWPW="${a}"; break; fi
+        printf 'Those were different - once more.\n' >&3
+    done
+    exec 3>&-
+    return 0
+}
 
 if [[ -n "${OPT_PORT}" ]] && ! [[ "${OPT_PORT}" =~ ^[0-9]{2,5}$ && "${OPT_PORT}" -ge 1024 && "${OPT_PORT}" -le 65535 ]]; then
     fail "--port takes a number from 1024 to 65535"
@@ -182,21 +214,52 @@ FIRST=false
 setting() { sed -nE "s/^$1=(.*)$/\1/p" "${ENV_FILE}" 2>/dev/null | tail -1; }
 PORT="${OPT_PORT:-$(setting SAW_MANAGER_PORT)}"; PORT="${PORT:-5080}"
 NAME="${OPT_NAME:-$(setting SAW_MANAGER_NAME)}"
-PASSWORD="$(setting SAW_MANAGER_PASSWORD)"
-SHOW_PW=false
-if [[ "${OPT_NEWPW}" == true ]] || { [[ "${FIRST}" == true ]] && [[ "${OPT_NOPW}" == false ]]; }; then
-    PASSWORD="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | head -c 16)"
-    SHOW_PW=true
-elif [[ "${FIRST}" == true ]]; then
-    PASSWORD=""
+# The password: hashed in ${DATA}/auth.json (see the header). v1/v2 kept it in
+# plain text in manager.env; it is moved into auth.json here, unchanged.
+AUTH="${DATA}/auth.json"
+LEGACY_PW="$(setting SAW_MANAGER_PASSWORD)"
+NEWPW=""; SHOW_PW=false; CHOSEN=false; MIGRATING=false
+if [[ -n "${OPT_PWFILE}" ]]; then
+    [[ -f "${OPT_PWFILE}" ]] || fail "--password-file: ${OPT_PWFILE} not found"
+    NEWPW="$(head -n 1 "${OPT_PWFILE}")"; rm -f "${OPT_PWFILE}"; CHOSEN=true
+elif [[ "${OPT_PW}" == true ]]; then
+    ask_password || fail "--password needs a terminal to type it in. Without one: --new-password
+  (a random one, printed), or --password-file FILE (removed after reading)."
+    if [[ -n "${NEWPW}" ]]; then CHOSEN=true; else NEWPW="$(random_pw)"; SHOW_PW=true; fi
+elif [[ "${OPT_NEWPW}" == true ]]; then
+    NEWPW="$(random_pw)"; SHOW_PW=true
+elif [[ -s "${AUTH}" ]]; then
+    :                                   # set already: kept
+elif [[ -n "${LEGACY_PW}" ]]; then
+    NEWPW="${LEGACY_PW}"; MIGRATING=true
+elif [[ "${FIRST}" == true && "${OPT_NOPW}" == false ]]; then
+    if ask_password && [[ -n "${NEWPW}" ]]; then CHOSEN=true; else NEWPW="$(random_pw)"; SHOW_PW=true; fi
 fi
+KEEP_LEGACY=""
+if [[ -n "${NEWPW}" ]]; then
+    install -d -o "${SVC_USER}" -g "${SVC_USER}" -m 750 "${DATA}" || fail "could not create ${DATA}"
+    if printf '%s\n' "${NEWPW}" | SAW_MANAGER_DATA="${DATA}" python3 "${DEST}/saw_manager.py" --set-password \
+       && chown "${SVC_USER}:${SVC_USER}" "${AUTH}" && chmod 600 "${AUTH}"; then
+        [[ "${MIGRATING}" == true ]] && info "password moved from ${ENV_FILE} into ${AUTH} (hashed, unchanged)"
+    elif [[ "${MIGRATING}" == true ]]; then
+        KEEP_LEGACY="${LEGACY_PW}"      # e.g. shorter than 8: keep it working as it was
+        warn "the password in ${ENV_FILE} could not be moved (too short?) - it still works;"
+        warn "change it on the Software page or with: sudo bash ${HERE}/install.sh --password"
+    else
+        fail "the password was not set (at least 8 characters, no control characters)"
+    fi
+fi
+SHOWN_PW=""; [[ "${SHOW_PW}" == true ]] && SHOWN_PW="${NEWPW}"   # printed once, at the end
+unset NEWPW LEGACY_PW
 envtmp="$(mktemp "${CONF_DIR}/.manager.env.XXXXXX")" || fail "mktemp failed"
 {
     echo "# SAW manager settings - written by install.sh, kept across updates."
-    echo "# Change with: sudo bash install.sh --port N | --name \"...\" | --new-password"
+    echo "# Change with: sudo bash install.sh --port N | --name \"...\""
+    echo "# The password is not here: it is hashed in ${AUTH}."
+    echo "# Change it on the Software page, or: sudo bash install.sh --password"
     echo "SAW_MANAGER_PORT=${PORT}"
     echo "SAW_MANAGER_NAME=${NAME}"
-    echo "SAW_MANAGER_PASSWORD=${PASSWORD}"
+    [[ -z "${KEEP_LEGACY}" ]] || echo "SAW_MANAGER_PASSWORD=${KEEP_LEGACY}"
 } > "${envtmp}"
 chown "root:${SVC_USER}" "${envtmp}" && chmod 640 "${envtmp}" && mv "${envtmp}" "${ENV_FILE}" \
     || { rm -f "${envtmp}"; fail "could not write ${ENV_FILE}"; }
@@ -279,13 +342,16 @@ echo ""
 info "${BOLD}running${NC} - dashboard: http://${IP}:${PORT}/"
 if [[ "${SHOW_PW}" == true ]]; then
     echo ""
-    echo -e "    ${BOLD}Password for the web pages: ${PASSWORD}${NC}   (any user name)"
-    echo "    Shown once. It is kept in ${ENV_FILE}: sudo cat ${ENV_FILE}"
+    echo -e "    ${BOLD}Password for the web pages: ${SHOWN_PW}${NC}   (any user name)"
+    echo "    Shown this once - it is stored hashed. Change it on the Software page."
     echo ""
-elif [[ -z "${PASSWORD}" ]]; then
+elif [[ "${CHOSEN}" == true ]]; then
+    info "password: the one you chose (any user name). Change it on the Software page."
+elif [[ ! -s "${AUTH}" && -z "${KEEP_LEGACY}" ]]; then
     warn "no password: anyone on the network can control the players from here."
-    warn "Set one with: sudo bash install.sh --new-password"
+    warn "Set one on the Software page, or with: sudo bash ${HERE}/install.sh --password"
 fi
+[[ -s "${AUTH}" ]] && info "forgot the password? sudo bash ${HERE}/install.sh --password"
 info "on each player (v23 or later): web UI -> Central Manager -> enter ${JOIN} -> Join"
 if [[ "${SELF_UPDATE}" == true ]]; then
     info "updates: Software page -> This manager -> Check for updates (or this install line again)"

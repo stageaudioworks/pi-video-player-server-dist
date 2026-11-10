@@ -42,6 +42,12 @@
 #   DEBIAN_VERSION  12 or 13                         (12)
 #   PORT, NAME      the manager's port and name      (5080, the hostname)
 #   NO_PASSWORD=1   first install only: no password on the web pages
+#   NEW_PASSWORD=1  on an existing container: choose a new password
+#
+# A new container: it asks you here, on the host, for the password of the web
+# pages (Enter for a random one, printed at the end). The password goes into the
+# container as a file (pct push, mode 600) that the installer reads and
+# deletes - never on a command line.
 #
 # The library is inside the container, so Proxmox backups (vzdump) include it.
 # Exit status: 0 done; 1 refused or failed (the message says why).
@@ -55,11 +61,38 @@ TAG=saw-manager
 CTID="${CTID:-}"; HN="${HN:-saw-manager}"; BRIDGE="${BRIDGE:-vmbr0}"; VLAN="${VLAN:-}"
 IP="${IP:-dhcp}"; GW="${GW:-}"; STORAGE="${STORAGE:-}"; TEMPLATE_STORE="${TEMPLATE_STORE:-}"
 DISK="${DISK:-32}"; CORES="${CORES:-1}"; RAM="${RAM:-512}"; DEBIAN_VERSION="${DEBIAN_VERSION:-12}"
-PORT="${PORT:-}"; NAME="${NAME:-}"; NO_PASSWORD="${NO_PASSWORD:-}"
+PORT="${PORT:-}"; NAME="${NAME:-}"; NO_PASSWORD="${NO_PASSWORD:-}"; NEW_PASSWORD="${NEW_PASSWORD:-}"
 NET_WAIT="${SAW_NET_WAIT_SECONDS:-90}"
+PW_FILE=""; CT_PW_FILE=/root/.saw-manager-password
+trap '[[ -n "${PW_FILE}" ]] && rm -f "${PW_FILE}"' EXIT
 
 die()  { echo "ERROR: $*" >&2; exit 1; }
 say()  { echo "==> $*"; }
+
+# Commands run inside the container get a plain, always-present locale: the
+# host shell's (en_US.UTF-8, say) is not generated in the Debian template, and
+# apt and perl then complain on every line.
+ctx() { local ct="$1"; shift; pct exec "${ct}" -- env LANG=C.UTF-8 LC_ALL=C.UTF-8 "$@"; }
+
+# ask_password: here, at the host's terminal, twice -> PW (empty: Enter, a random
+# one). Returns 1, asking nothing, when there is no terminal.
+ask_password() {
+    local a b
+    PW=""
+    { exec 3<>/dev/tty; } 2>/dev/null || return 1
+    while true; do
+        printf 'Choose a password for the manager'"'"'s web pages (8+ characters; Enter for a random one): ' >&3
+        IFS= read -r -s a <&3; printf '\n' >&3
+        [[ -n "${a}" ]] || break
+        if (( ${#a} < 8 )); then printf 'At least 8 characters, please.\n' >&3; continue; fi
+        printf 'The same again: ' >&3
+        IFS= read -r -s b <&3; printf '\n' >&3
+        if [[ "${a}" == "${b}" ]]; then PW="${a}"; break; fi
+        printf 'Those were different - once more.\n' >&3
+    done
+    exec 3>&-
+    return 0
+}
 
 # The first active storage that can hold CONTENT (rootdir, vztmpl).
 first_storage() { { pvesm status --content "$1" 2>/dev/null || true; } | awk 'NR>1 && $3=="active"{print $1; exit}'; }
@@ -77,12 +110,24 @@ find_manager_ct() {
 }
 
 wait_net() {
-    local _
+    local _ addr gw
+    say "Waiting for the container's network (up to ${NET_WAIT} s)"
     for _ in $(seq 1 "${NET_WAIT}"); do
         pct exec "$1" -- getent hosts raw.githubusercontent.com >/dev/null 2>&1 && return 0
         sleep 1
     done
-    die "container $1 has no working network or DNS after ${NET_WAIT} s. Check the bridge (${BRIDGE}${VLAN:+, VLAN ${VLAN}}), DHCP, or IP/GW."
+    # Which step fails, so the message says what to fix.
+    addr="$(pct exec "$1" -- ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | head -1)"
+    gw="$(pct exec "$1" -- ip -4 route show default 2>/dev/null | awk '{print $3}' | head -1)"
+    if [[ -z "${addr}" ]]; then
+        die "container $1 got no IPv4 address after ${NET_WAIT} s. With DHCP: is there a DHCP server on bridge ${BRIDGE}${VLAN:+, VLAN ${VLAN}}? Or re-run with IP=a.b.c.d/nn GW=a.b.c.d."
+    elif [[ -n "${gw}" ]] && ! pct exec "$1" -- ping -c 2 -W 2 "${gw}" >/dev/null 2>&1; then
+        die "container $1 has ${addr} but cannot reach its gateway ${gw}: wrong bridge or VLAN (now ${BRIDGE}${VLAN:+, VLAN ${VLAN}}), or a wrong GW.
+  Compare with the host: ip -br addr; ip route. Fix with: pct set $1 --net0 name=eth0,bridge=...,ip=...,gw=...[,tag=N]
+  then run this again - it carries on in the same container."
+    else
+        die "container $1 reaches its gateway but cannot look up names (DNS). Set one: pct set $1 --nameserver <dns-ip>, then run this again."
+    fi
 }
 
 # The newest Debian VERSION template for ARCH, downloaded if missing -> its volume id.
@@ -132,7 +177,20 @@ if [[ -n "${EXISTING}" ]]; then
     if ! pct status "${CT}" 2>/dev/null | grep -q running; then
         pct start "${CT}" || die "could not start container ${CT}"
     fi
-else
+fi
+
+# The password - asked before the slow part, so nobody waits at a question.
+if [[ -z "${NO_PASSWORD}" ]] && [[ -z "${EXISTING}" || -n "${NEW_PASSWORD}" ]]; then
+    if ask_password && [[ -n "${PW}" ]]; then
+        PW_FILE="$(mktemp)" && chmod 600 "${PW_FILE}" && printf '%s\n' "${PW}" > "${PW_FILE}" \
+            || die "could not write a temp file for the password"
+    elif [[ -n "${NEW_PASSWORD}" ]]; then
+        INSTALL_ARGS+=(--new-password)    # Enter, or no terminal: a random one, printed
+    fi
+    unset PW
+fi
+
+if [[ -z "${EXISTING}" ]]; then
     MODE=create
     CT="${CTID:-$(pvesh get /cluster/nextid 2>/dev/null)}"
     [[ "${CT}" =~ ^[0-9]+$ ]] || die "could not get a free container id: set CTID=<id>"
@@ -163,17 +221,24 @@ wait_net "${CT}"
 
 # ── Install or update inside it: the same bootstrap as on any Linux machine ───
 say "Installing curl in the container (if missing)"
-if ! pct exec "${CT}" -- sh -c 'command -v curl >/dev/null'; then
-    pct exec "${CT}" -- sh -c 'apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates >/dev/null' \
+if ! ctx "${CT}" sh -c 'command -v curl >/dev/null'; then
+    ctx "${CT}" sh -c 'apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates >/dev/null' \
         || die "could not install curl in container ${CT}"
 fi
+if [[ -n "${PW_FILE}" ]]; then
+    pct push "${CT}" "${PW_FILE}" "${CT_PW_FILE}" --perms 600 || die "could not hand the password to container ${CT}"
+    rm -f "${PW_FILE}"; PW_FILE=""
+    INSTALL_ARGS+=(--password-file "${CT_PW_FILE}")
+fi
 say "Running the manager's bootstrap in container ${CT}"
-# The arguments are checked above (numbers, a hostname-like name); quoted for sh.
+# The arguments are checked above (numbers, a hostname-like name, fixed paths); quoted for sh.
 QARGS=""
 for a in ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}; do QARGS="${QARGS} '${a//\'/}'"; done
-pct exec "${CT}" -- env SAW_REPO_URL="${SAW_REPO_URL:-}" sh -c \
-    "curl -fsSL '${DIST_RAW}/bootstrap.sh' | bash -s --${QARGS}" \
-    || die "the install in container ${CT} failed (see above). Fix it and run this again - it updates the same container."
+ctx "${CT}" SAW_REPO_URL="${SAW_REPO_URL:-}" sh -c \
+    "curl -fsSL '${DIST_RAW}/bootstrap.sh' | bash -s --${QARGS}"
+RC=$?
+pct exec "${CT}" -- rm -f "${CT_PW_FILE}" >/dev/null 2>&1     # read and removed by the installer; in case it failed first
+[[ ${RC} -eq 0 ]] || die "the install in container ${CT} failed (see above). Fix it and run this again - it updates the same container."
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 CT_IP="$(pct exec "${CT}" -- hostname -I 2>/dev/null | awk '{print $1}')"
@@ -183,12 +248,12 @@ URL="http://${CT_IP:-<container address>}:${CT_PORT}/"
 JOIN="${CT_IP:-<container address>}"; [[ "${CT_PORT}" == 5080 ]] || JOIN="${JOIN}:${CT_PORT}"
 pct set "${CT}" --description "SAW central manager - dashboard ${URL}
 Players: web UI -> Central Manager -> ${JOIN}
-Password: pct exec ${CT} -- cat /etc/saw-manager/manager.env
-Update: run the same proxmox-lxc.sh link on this host again." >/dev/null 2>&1 || true
+Password: change it on the Software page. Forgot it? On this host: NEW_PASSWORD=1 and the same link, or: pct enter ${CT}, then bash /opt/saw-manager-src/install.sh --password
+Update: Software page -> This manager, or the same proxmox-lxc.sh link on this host." >/dev/null 2>&1 || true
 echo ""
 say "SAW manager ${MODE}d in container ${CT}"
-echo "    Dashboard : ${URL}"
+echo "    Dashboard : ${URL}   (any user name)"
 echo "    Players   : web UI -> Central Manager -> ${JOIN} -> Join"
-echo "    Password  : pct exec ${CT} -- cat /etc/saw-manager/manager.env"
-echo "    Update    : run this same link on the host again"
+echo "    Password  : change it on the Software page; forgot it? NEW_PASSWORD=1 and this same link"
+echo "    Update    : Software page -> This manager, or this same link"
 exit 0
