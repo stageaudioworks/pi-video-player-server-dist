@@ -114,21 +114,54 @@ function unitRow(u) {
   return r.tr;
 }
 
+/* Folding groups: click a group's name. Which are folded is kept in this
+   browser (sawFoldedGroups). A folded group keeps its header - counts and
+   controls - and says when one of its units needs a look. */
+let folded = {};
+try { folded = JSON.parse(localStorage.getItem('sawFoldedGroups') || '{}') || {}; } catch (e) { folded = {}; }
+function saveFolded() { try { localStorage.setItem('sawFoldedGroups', JSON.stringify(folded)); } catch (e) {} }
+function toggleGroup(g) { if (folded[g]) delete folded[g]; else folded[g] = 1; saveFolded(); applyFold(); }
+function needsLook(u) { return !u.online || u.status_tone === 'err' || u.status_tone === 'warn'; }
+
 function groupRow(g, units) {
   let r = rows['g:' + g];
   if (!r) {
     const tr = el('tr', null, 'group-row');
     const td = el('td'); td.colSpan = 7;
     const head = el('div', null, 'row'); head.style.marginBottom = '0';
-    const label = el('span');
-    head.appendChild(label);
+    const label = el('span', null, 'group-name');
+    label.tabIndex = 0; label.setAttribute('role', 'button');
+    label.title = 'Fold or unfold this group';
+    const mark = el('span', null, 'mark'), text = el('span'), alert = el('span', null, 'badge t-warn');
+    label.appendChild(mark); label.appendChild(text);
+    label.onclick = function () { toggleGroup(g); };
+    label.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroup(g); } };
+    head.appendChild(label); head.appendChild(alert);
     head.appendChild(controlBar(function () { return idsOf(function (x) { return x.group === g; }); }, g || 'no group'));
     td.appendChild(head); tr.appendChild(td);
-    r = rows['g:' + g] = {tr: tr, label: label};
+    r = rows['g:' + g] = {tr: tr, label: label, mark: mark, text: text, alert: alert, group: g};
   }
   const n = units.filter(function (x) { return x.group === g; });
-  r.label.textContent = (g || 'No group') + '  (' + n.filter(function (x) { return x.online; }).length + '/' + n.length + ' online)';
+  r.text.textContent = (g || 'No group') + '  (' + n.filter(function (x) { return x.online; }).length + '/' + n.length + ' online)';
+  r.attention = n.filter(needsLook).length;
   return r.tr;
+}
+
+function applyFold() {
+  const grouped = current.some(function (u) { return u.group; });
+  current.forEach(function (u) {
+    const r = rows['u:' + u.id];
+    if (r) r.tr.style.display = grouped && folded[u.group] ? 'none' : '';
+  });
+  Object.keys(rows).forEach(function (k) {
+    const r = rows[k];
+    if (k.indexOf('g:') !== 0) return;
+    const f = !!folded[r.group];
+    r.mark.textContent = String.fromCharCode(f ? 9656 : 9662);
+    r.label.setAttribute('aria-expanded', f ? 'false' : 'true');
+    r.alert.textContent = f && r.attention ? r.attention + ' need' + (r.attention === 1 ? 's' : '') + ' a look' : '';
+    r.alert.style.display = r.alert.textContent ? '' : 'none';
+  });
 }
 
 function render(d) {
@@ -155,6 +188,7 @@ function render(d) {
       tr.appendChild(td); body.appendChild(tr);
     }
   }
+  applyFold();
   const online = units.filter(function (u) { return u.online; }).length;
   document.getElementById('count').textContent = units.length ? '(' + units.length + ')' : '';
   document.getElementById('summary').textContent = units.length ? (online + ' online, ' + (units.length - online) + ' not') : '';

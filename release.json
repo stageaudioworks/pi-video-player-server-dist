@@ -1,9 +1,9 @@
 {
   "product": "saw-manager",
-  "version": 3,
+  "version": 4,
   "file": "saw_manager.py",
-  "sha256": "40be4e271e0d241fb1240be562f232d57d03f492aa5a1115d7353dcde08bb8f4",
-  "code_sha256": "884be070f538b24f508eb86c5d98cf872c6d7e24c38c359b16cfacb7a2a293a3",
-  "released": "2026-11-10T14:12:06Z",
-  "source_commit": "07a0ea3"
+  "sha256": "1261491780ec010cbe99d741399e3186a46adab14f3e9ae50921994c7bdec707",
+  "code_sha256": "39a4672d450fa51e48d71ef4b730e2d18d6b84dc5f6f84c2476c88acf5c4f783",
+  "released": "2026-11-10T14:35:23Z",
+  "source_commit": "61c174f"
 }

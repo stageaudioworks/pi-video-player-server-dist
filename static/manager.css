@@ -28,6 +28,9 @@ th{text-align:left;color:var(--muted);font-weight:600;border-bottom:1px solid va
 td{border-bottom:1px solid var(--border);padding:7px 6px;vertical-align:middle}
 tr:last-child td{border-bottom:none}
 tr.group-row td{background:var(--group);font-weight:600;padding:6px}
+.group-name{cursor:pointer;user-select:none;border-radius:4px;padding:1px 3px}
+.group-name:hover,.group-name:focus{text-decoration:underline;outline:none}
+.group-name .mark{display:inline-block;width:1.1em;color:var(--muted)}
 .scroll{overflow-x:auto}
 .pill{display:inline-block;padding:3px 10px;border-radius:12px;font-size:0.85em;font-weight:600;white-space:nowrap}
 .t-ok{background:var(--ok-bg);color:var(--ok-fg)}.t-warn{background:var(--warn-bg);color:var(--warn-fg)}

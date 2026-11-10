@@ -76,7 +76,7 @@ async function forget() {
 function render(u, groups) {
   unit = u;
   document.getElementById('uname').textContent = unitName(u);
-  document.title = unitName(u) + ' - SAW manager';
+  document.title = unitName(u) + ' - Pi Video Player Manager';
   const st = document.getElementById('ustatus'); st.textContent = '';
   st.appendChild(el('span', u.status_text, 'pill t-' + u.status_tone));
   document.getElementById('uinfo').textContent = u.id + ' · ' + (u.hostname || '') + ' · ' + (u.address || 'no address') +

@@ -17,7 +17,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 """
-Stage Audio Works central manager  (v3)
+Stage Audio Works central manager  (v4)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 One page listing every player that has joined, live, in groups; remote
@@ -109,7 +109,7 @@ from urllib.parse import unquote
 
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file
 
-MANAGER_VERSION = 3
+MANAGER_VERSION = 4
 PROTOCOL        = 1
 
 DATA_DIR  = os.environ.get("SAW_MANAGER_DATA", "/var/lib/saw-manager")
@@ -797,7 +797,7 @@ def _guard():
         a = request.authorization
         if not (a and a.password is not None and check_password(a.password)):
             return Response("Password required", 401,
-                            {"WWW-Authenticate": 'Basic realm="SAW manager"'})
+                            {"WWW-Authenticate": 'Basic realm="Pi Video Player Manager"'})
     # A page on another site can make the browser POST here, with the cached
     # password - but not with a custom header, without asking first (CORS).
     if request.method == "POST" and request.headers.get("X-SAW") != "1":
@@ -1347,6 +1347,6 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     init()
     threading.Thread(target=sweeper, daemon=True, name="sweeper").start()
-    logger.info("SAW manager v%d (%s) starting on port %d, data in %s%s", MANAGER_VERSION, NAME,
+    logger.info("Pi Video Player Manager v%d (%s) starting on port %d, data in %s%s", MANAGER_VERSION, NAME,
                 PORT, DATA_DIR, "" if password_required() else " - NO PASSWORD SET")
     app.run(host="0.0.0.0", port=PORT, threaded=True)

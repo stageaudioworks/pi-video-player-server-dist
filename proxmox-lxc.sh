@@ -17,11 +17,11 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # =============================================================================
-# SAW central manager as a Proxmox VE container (LXC)
+# Pi Video Player Manager as a Proxmox VE container (LXC)
 # =============================================================================
 # Run ON the Proxmox host, as root (the host's Shell in the web UI will do).
 # Creates an unprivileged Debian container and installs the manager in it - or,
-# if a SAW manager container already exists, updates it. The same link both times:
+# if a Pi Video Player Manager container already exists, updates it. The same link both times:
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/stageaudioworks/pi-video-player-server-dist/main/proxmox-lxc.sh)
 #
@@ -169,11 +169,11 @@ INSTALL_ARGS=()
 # ── Create, or find the one to update ─────────────────────────────────────────
 EXISTING="$(find_manager_ct)"
 if [[ -n "${CTID}" && -n "${EXISTING}" && "${CTID}" != "${EXISTING}" ]]; then
-    die "container ${EXISTING} already runs the SAW manager; CTID=${CTID} would make a second one. Unset CTID to update ${EXISTING}."
+    die "container ${EXISTING} already runs the Pi Video Player Manager; CTID=${CTID} would make a second one. Unset CTID to update ${EXISTING}."
 fi
 if [[ -n "${EXISTING}" ]]; then
     CT="${EXISTING}"; MODE=update
-    say "Updating the SAW manager in container ${CT}"
+    say "Updating the Pi Video Player Manager in container ${CT}"
     if ! pct status "${CT}" 2>/dev/null | grep -q running; then
         pct start "${CT}" || die "could not start container ${CT}"
     fi
@@ -194,7 +194,7 @@ if [[ -z "${EXISTING}" ]]; then
     MODE=create
     CT="${CTID:-$(pvesh get /cluster/nextid 2>/dev/null)}"
     [[ "${CT}" =~ ^[0-9]+$ ]] || die "could not get a free container id: set CTID=<id>"
-    pct status "${CT}" >/dev/null 2>&1 && die "container ${CT} already exists and is not a SAW manager: choose another CTID"
+    pct status "${CT}" >/dev/null 2>&1 && die "container ${CT} already exists and is not a Pi Video Player Manager: choose another CTID"
     STORAGE="${STORAGE:-$(first_storage rootdir)}"
     TEMPLATE_STORE="${TEMPLATE_STORE:-$(first_storage vztmpl)}"
     [[ -n "${STORAGE}" ]] || die "no active storage that can hold a container's disk: set STORAGE=<id> (see: pvesm status)"
@@ -246,12 +246,12 @@ CT_PORT="$(pct exec "${CT}" -- sh -c "sed -n 's/^SAW_MANAGER_PORT=//p' /etc/saw-
 CT_PORT="${CT_PORT:-5080}"
 URL="http://${CT_IP:-<container address>}:${CT_PORT}/"
 JOIN="${CT_IP:-<container address>}"; [[ "${CT_PORT}" == 5080 ]] || JOIN="${JOIN}:${CT_PORT}"
-pct set "${CT}" --description "SAW central manager - dashboard ${URL}
+pct set "${CT}" --description "Pi Video Player Manager - dashboard ${URL}
 Players: web UI -> Central Manager -> ${JOIN}
 Password: change it on the Software page. Forgot it? On this host: NEW_PASSWORD=1 and the same link, or: pct enter ${CT}, then bash /opt/saw-manager-src/install.sh --password
 Update: Software page -> This manager, or the same proxmox-lxc.sh link on this host." >/dev/null 2>&1 || true
 echo ""
-say "SAW manager ${MODE}d in container ${CT}"
+say "Pi Video Player Manager ${MODE}d in container ${CT}"
 echo "    Dashboard : ${URL}   (any user name)"
 echo "    Players   : web UI -> Central Manager -> ${JOIN} -> Join"
 echo "    Password  : change it on the Software page; forgot it? NEW_PASSWORD=1 and this same link"
