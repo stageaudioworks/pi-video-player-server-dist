@@ -101,7 +101,7 @@ if [[ "${OPT_UNINSTALL}" == true ]]; then
 fi
 
 # ── What this machine is ──────────────────────────────────────────────────────
-for f in saw_manager.py saw-manager.service templates/layout.html templates/index.html \
+for f in saw_manager.py saw-manager.service templates/layout.html templates/_logo.html templates/index.html \
          templates/unit.html templates/content.html templates/software.html \
          static/manager.css static/manager.js self-update.sh saw-manager-update.service          saw-manager-update.path; do
     [[ -f "${HERE}/${f}" ]] || fail "missing ${HERE}/${f} - run this from a full checkout"
@@ -241,7 +241,12 @@ fi
 
 systemctl daemon-reload
 systemctl enable saw-manager >/dev/null 2>&1
-systemctl enable --now saw-manager-update.path >/dev/null 2>&1 || warn "could not start saw-manager-update.path - the update button will not work"
+# reset-failed + restart: a watcher left failed (by a start limit on an older
+# install) is watching nothing until it is restarted. Restarting it does not
+# stop an update job in progress - this installer may be running under one.
+systemctl reset-failed saw-manager-update.path saw-manager-update.service >/dev/null 2>&1
+systemctl enable saw-manager-update.path >/dev/null 2>&1
+systemctl restart saw-manager-update.path >/dev/null 2>&1 || warn "could not start saw-manager-update.path - the update button will not work"
 systemctl restart saw-manager
 
 up=false

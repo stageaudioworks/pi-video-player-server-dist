@@ -1,8 +1,8 @@
 /* SAW manager - the player's palette, light and dark (see the player's template) */
 :root{--bg:#f0f2f5;--card:#fff;--text:#222;--muted:#555;--faint:#888;--border:#dde;--subtle:#f4f5f7;
   --link:#1a6fb5;--input:#fff;--ok-bg:#d4edda;--ok-fg:#155724;--warn-bg:#fff3cd;--warn-fg:#856404;
-  --err-bg:#f8d7da;--err-fg:#721c24;--info-bg:#d6e9fb;--info-fg:#0b4a80;--bar:#007bff;--group:#e9edf3}
-html[data-theme=dark]{color-scheme:dark;--bg:#121417;--card:#1c1f24;--text:#e4e6ea;--muted:#a9afb8;--faint:#7f8690;
+  --err-bg:#f8d7da;--err-fg:#721c24;--info-bg:#d6e9fb;--info-fg:#0b4a80;--bar:#007bff;--group:#e9edf3;--logo:#000}
+html[data-theme=dark]{color-scheme:dark;--logo:#fff;--bg:#121417;--card:#1c1f24;--text:#e4e6ea;--muted:#a9afb8;--faint:#7f8690;
   --border:#343a42;--subtle:#252a31;--link:#6cb4ff;--input:#262b33;--ok-bg:#173a22;--ok-fg:#93d9a5;
   --warn-bg:#3b3110;--warn-fg:#ecca62;--err-bg:#41191d;--err-fg:#f3a1a8;--info-bg:#132c45;--info-fg:#9cc9f5;
   --bar:#3d8bfd;--group:#232830}
@@ -15,8 +15,10 @@ header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14p
 header h1{font-size:1.4em;margin:0}
 header nav a{margin-right:12px;text-decoration:none;font-weight:600}
 header nav a.here{color:var(--text);border-bottom:2px solid var(--link)}
+/* the player's light/dark toggle: a pill naming the theme it switches to */
 .theme-toggle{margin-left:auto;background:var(--card);color:var(--text);border:1px solid var(--border);
   border-radius:16px;padding:5px 12px;font-size:0.85em;cursor:pointer}
+.theme-toggle:hover{border-color:var(--muted)}
 .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:14px}
 .card h3{margin:0 0 10px;font-size:1.05em}
 .hint{font-size:0.85em;color:var(--muted)}
@@ -49,5 +51,12 @@ tr.group-row td{background:var(--group);font-weight:600;padding:6px}
 .activity td{padding:4px 6px}
 #toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);padding:9px 18px;border-radius:8px;
   font-size:0.92em;display:none;z-index:10;max-width:90vw}
-footer{margin-top:20px;font-size:0.8em;color:var(--faint)}
+/* the footer and the logo, as on the player: lettering follows the theme */
+footer{text-align:center;color:var(--faint);font-size:0.85em;margin-top:8px;padding-top:12px;border-top:1px solid var(--border)}
+footer .ver{font-size:0.9em;margin-top:6px}
+.saw-logo-link{display:inline-block;margin-top:8px}
+.saw-logo{height:40px;width:auto;max-width:90vw;display:block}
+.saw-logo .l1{fill:none}
+.saw-logo .l2{fill:var(--logo);fill-rule:evenodd}
+.saw-logo .l3{fill:url(#sawLogoGrad);fill-rule:evenodd}
 @media (max-width:700px){body{padding:10px}.hide-narrow{display:none}}

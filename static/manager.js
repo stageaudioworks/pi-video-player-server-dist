@@ -10,10 +10,21 @@ const ACTIONS = [['override_on', 'Override on'], ['override_off', 'Override off'
                  ['restart', 'Restart loop'], ['play', 'Play'], ['pause', 'Pause'],
                  ['trigger_1', 'T1'], ['trigger_2', 'T2'], ['trigger_3', 'T3']];
 
+/* Light / dark, as on the player: the button names the theme it switches to
+   (☾ Dark / ☀ Light); the choice is kept in this browser (sawTheme - the same
+   key as the player's, so both follow one choice on the same address). */
+function themeLabel() {
+  const b = document.getElementById('themeBtn');
+  if (!b) return;
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  b.textContent = dark ? String.fromCharCode(9728) + ' Light' : String.fromCharCode(9790) + ' Dark';
+}
+
 function toggleTheme() {
   const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', t);
   try { localStorage.setItem('sawTheme', t); } catch (e) {}
+  themeLabel();
 }
 
 function toast(msg, ok) {

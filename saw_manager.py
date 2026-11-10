@@ -17,7 +17,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 """
-Stage Audio Works central manager  (v1)
+Stage Audio Works central manager  (v2)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 One page listing every player that has joined, live, in groups; remote
@@ -104,7 +104,7 @@ from urllib.parse import unquote
 
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file
 
-MANAGER_VERSION = 1
+MANAGER_VERSION = 2
 PROTOCOL        = 1
 
 DATA_DIR  = os.environ.get("SAW_MANAGER_DATA", "/var/lib/saw-manager")
@@ -149,6 +149,7 @@ GITHUB_TIMEOUT = 20
 SELF_SOURCE  = os.environ.get("SAW_MANAGER_UPDATE_SOURCE", "/etc/saw-manager/update-source")
 SELF_OUT     = os.environ.get("SAW_MANAGER_UPDATE_DIR", "/var/lib/saw-manager-update")
 SELF_STALE_S = 30 * 60       # a "running" older than this was cut off (a reboot)
+SELF_PENDING_S = 30          # a request no job picked up in this long is stuck (see self_view)
 
 UNIT_ID_RE = re.compile(r"^(pi|mac|host)-[a-z0-9-]{1,48}$")
 KEY_RE     = re.compile(r"^[0-9a-f]{32}$")
@@ -1162,7 +1163,14 @@ def self_view() -> dict:
         log = []
     age = _iso_age(state.get("updated"))
     running = state.get("state") == "running" and (age is None or age < SELF_STALE_S)
-    pending = os.path.exists(_self_request_path())
+    # A request written while the previous job's unit was still stopping can
+    # be missed by the path unit, and would then block every later ask. One
+    # that no job has picked up in SELF_PENDING_S is not "pending" any more:
+    # asking again replaces the file, and that new file starts the job.
+    try:
+        pending = time.time() - os.path.getmtime(_self_request_path()) < SELF_PENDING_S
+    except OSError:
+        pending = False
     view = {"installed": MANAGER_VERSION, "available": available, "state": state,
             "log": log, "running": running, "pending": pending,
             "newer": isinstance(state.get("available"), int)

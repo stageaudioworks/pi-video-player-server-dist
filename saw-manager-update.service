@@ -2,6 +2,11 @@
 Description=Stage Audio Works central manager - update asked for from its web page
 # Started by saw-manager-update.path, never by hand (but harmless if it is:
 # with no request it only checks).
+# No start rate limit: systemd's default (5 starts in 10 s) refuses the 6th
+# start, and the refusal fails the .path unit, which then stops watching -
+# the button would be dead until a reboot. Proven by a stress test of 50
+# checks in a row. The manager lets only one request through at a time.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot

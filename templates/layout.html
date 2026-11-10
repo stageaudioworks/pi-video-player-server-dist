@@ -19,12 +19,17 @@ document.documentElement.setAttribute('data-theme',t);})();
     <a href="/content" class="{{ 'here' if page == 'content' }}">Content</a>
     <a href="/software" class="{{ 'here' if page == 'software' }}">Software</a>
   </nav>
-  <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()">Theme</button>
+  <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()" title="Switch between light and dark"></button>
 </header>
 <div id="toast"></div>
 {% block body %}{% endblock %}
-<footer>Stage Audio Works video player &middot; central manager v{{ version }}</footer>
+<footer>
+  A Stage Audio Works Innovation<br>
+  <a class="saw-logo-link" href="https://stageaudioworks.com" target="_blank" rel="noopener noreferrer">{% include "_logo.html" %}</a>
+  <div class="ver">Video player central manager v{{ version }}</div>
+</footer>
 <script src="{{ url_for('static', filename='manager.js') }}"></script>
+<script>themeLabel();</script>
 {% block script %}{% endblock %}
 </body>
 </html>
