@@ -17,7 +17,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 """
-Stage Audio Works central manager  (v4)
+Stage Audio Works central manager  (v5)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 One page listing every player that has joined, live, in groups; remote
@@ -83,6 +83,7 @@ a page on another site cannot send without the browser asking first):
 Unit routes (unit id and key):
   /api/v1/heartbeat  POST   /api/v1/wait  POST
   /api/v1/content/<sha256>  GET   /api/v1/player/<sha256>  GET
+  /api/v1/manual/<sha256>   GET   the manual published with the unit's target version
 """
 from __future__ import annotations
 
@@ -109,7 +110,7 @@ from urllib.parse import unquote
 
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file
 
-MANAGER_VERSION = 4
+MANAGER_VERSION = 5
 PROTOCOL        = 1
 
 DATA_DIR  = os.environ.get("SAW_MANAGER_DATA", "/var/lib/saw-manager")
@@ -145,6 +146,8 @@ PLAYER_REQUIRED    = ("play_trigger", "mpv_watchdog", "udp_listener", "switch_vi
                       "SAW_PLAYER_SIGNATURE")
 PLAYER_MIN_VERSION = 23      # the first with the manager client: older ones cannot take it
 PLAYER_MAX_SIZE    = 4 * 1024 * 1024
+MANUAL_PATH        = "docs/USER_MANUAL.pdf"   # in the player's public repo; fixed, never from a request
+MANUAL_MAX_SIZE    = 32 * 1024 * 1024         # the player's UPDATE_MAX_MANUAL
 # Fixed in code, as on the players (their constraint 17): never from a request.
 GITHUB_SOURCES = (
     "https://raw.githubusercontent.com/stageaudioworks/pi-video-player-dist/main/{path}",
@@ -194,7 +197,8 @@ class Store:
         self.dir = data_dir
         self.content_dir = os.path.join(data_dir, "content")
         self.player_dir = os.path.join(data_dir, "players")
-        for d in (self.content_dir, self.player_dir):
+        self.manual_dir = os.path.join(data_dir, "manuals")
+        for d in (self.content_dir, self.player_dir, self.manual_dir):
             os.makedirs(d, exist_ok=True)
         self.lock = threading.Lock()
         self.cond = threading.Condition(self.lock)   # wakes held /api/v1/wait requests
@@ -204,7 +208,7 @@ class Store:
         self.live = {}            # unit id -> what its last heartbeat said, and when
         self.queues = {}          # unit id -> commands not yet delivered
         self.activity = collections.OrderedDict()   # command id -> what became of it
-        for d in (self.content_dir, self.player_dir):
+        for d in (self.content_dir, self.player_dir, self.manual_dir):
             for name in os.listdir(d):
                 if name.startswith(".upload-"):
                     try:
@@ -251,6 +255,9 @@ class Store:
 
     def player_path(self, sha: str) -> str:
         return os.path.join(self.player_dir, sha + ".py")
+
+    def manual_path(self, sha: str) -> str:
+        return os.path.join(self.manual_dir, sha + ".pdf")
 
     def online(self, uid: str, now: Optional[float] = None) -> bool:
         live = self.live.get(uid)
@@ -417,7 +424,7 @@ def clean_content(raw) -> dict:
 
 
 def clean_job(raw) -> Optional[dict]:
-    if not isinstance(raw, dict) or raw.get("slot") not in SLOTS + ("player",):
+    if not isinstance(raw, dict) or raw.get("slot") not in SLOTS + ("player", "manual"):
         return None
     return {"slot": raw["slot"], "sha256": _clip_str(raw.get("sha256"), 64),
             "size": _clip_int(raw.get("size")), "done": _clip_int(raw.get("done")),
@@ -427,7 +434,14 @@ def clean_job(raw) -> Optional[dict]:
 def clean_failed(raw) -> dict:
     raw = raw if isinstance(raw, dict) else {}
     return {s: {"sha256": _clip_str(v.get("sha256"), 64), "error": _clip_str(v.get("error"), 300)}
-            for s, v in raw.items() if s in SLOTS + ("player",) and isinstance(v, dict)}
+            for s, v in raw.items() if s in SLOTS + ("player", "manual") and isinstance(v, dict)}
+
+
+def clean_manual_report(raw) -> Optional[dict]:
+    """The manual a unit (v25+) reports it has: {"sha256", "size"} or None."""
+    if isinstance(raw, dict) and isinstance(raw.get("sha256"), str) and SHA_RE.match(raw["sha256"]):
+        return {"sha256": raw["sha256"], "size": _clip_int(raw.get("size"))}
+    return None
 
 
 def _unit_auth(uid, key):
@@ -486,15 +500,18 @@ def handle_heartbeat(body, remote_addr: str):
                            "content": clean_content(body.get("content")),
                            "job": clean_job(body.get("job")),
                            "failed": clean_failed(body.get("failed")),
+                           "manual": clean_manual_report(body.get("manual")),
                            "offline_logged": False}
         record_results(body.get("results"))
         content = {slot: {"sha256": sha, "size": store.clips[sha]["size"]}
                    for slot, sha in u["assign"].items() if sha in store.clips}
-        player = None
+        player = manual = None
         target = u.get("player")
         if target in store.players:
             p = store.players[target]
             player = {"version": p["version"], "sha256": target, "size": p["size"]}
+            if p.get("manual"):
+                manual = dict(p["manual"], version=p["version"])
         commands = take_commands(uid)
         if changed:
             store.save_units()
@@ -507,6 +524,8 @@ def handle_heartbeat(body, remote_addr: str):
              "server_name": NAME, "content": content, "wait": True, "commands": commands}
     if player:
         reply["player"] = player
+    if manual:          # players v25+: the manual published with that version
+        reply["manual"] = manual
     return 200, reply
 
 
@@ -583,6 +602,23 @@ def player_route(sha):
     if not os.path.exists(path):
         abort(404)
     return send_file(path, mimetype="application/octet-stream", max_age=0)
+
+
+@app.route("/api/v1/manual/<sha>")
+def manual_route(sha):
+    """The user manual published with the unit's target player version (v5).
+    Units v25+ ask for it, to stay current where they cannot reach GitHub."""
+    if not SHA_RE.match(sha):
+        abort(404)
+    uid, u = _unit_from_headers()
+    with store.lock:
+        p = store.players.get(u.get("player") or "")
+        if not p or (p.get("manual") or {}).get("sha256") != sha:
+            abort(404)
+    path = store.manual_path(sha)
+    if not os.path.exists(path):
+        abort(404)
+    return send_file(path, mimetype="application/pdf", max_age=0)
 
 
 def sweeper():
@@ -699,7 +735,62 @@ def fetch_github_player() -> dict:
     content = _github_get(f, PLAYER_MAX_SIZE)
     if hashlib.sha256(content).hexdigest() != sha:
         raise ValueError("the downloaded script does not match release.json's SHA-256")
-    return add_player(content, "GitHub release v%d" % v)
+    result = add_player(content, "GitHub release v%d" % v)
+    # The manual published with it (v15+ releases): fetched from the same fixed
+    # source, checked against release.json. A problem with it is reported and
+    # never stops the player version from being added - as on the units.
+    msha, msize = m.get("manual_sha256"), m.get("manual_size")
+    if isinstance(msha, str) and SHA_RE.match(msha) and isinstance(msize, int) \
+            and not isinstance(msize, bool) and 0 < msize <= MANUAL_MAX_SIZE:
+        with store.lock:
+            have = (store.players.get(result["sha256"], {}).get("manual") or {}).get("sha256")
+        if have == msha and os.path.exists(store.manual_path(msha)):
+            result["manual"] = "already here"
+        else:
+            try:
+                pdf = _github_get(MANUAL_PATH, MANUAL_MAX_SIZE)
+                if len(pdf) != msize or hashlib.sha256(pdf).hexdigest() != msha:
+                    raise ValueError("the manual does not match release.json's SHA-256")
+                attach_manual(result["sha256"], pdf, "GitHub release v%d" % v)
+                result["manual"] = "added"
+            except ValueError as e:
+                result["manual"] = "not added: %s" % e
+                logger.warning("Manual for player v%d not added: %s", v, e)
+    else:
+        result["manual"] = "none published with this release"
+    return result
+
+
+def attach_manual(player_sha: str, pdf: bytes, source: str):
+    """Keep the user manual that goes with a player version. Raises ValueError."""
+    if not pdf.startswith(b"%PDF-"):
+        raise ValueError("not a PDF")
+    if len(pdf) > MANUAL_MAX_SIZE:
+        raise ValueError("larger than %d MB" % (MANUAL_MAX_SIZE // 1048576))
+    sha = hashlib.sha256(pdf).hexdigest()
+    with store.lock:
+        p = store.players.get(player_sha)
+        if p is None:
+            raise ValueError("no such player version here")
+        fd, tmp = tempfile.mkstemp(dir=store.manual_dir, prefix=".upload-")
+        with os.fdopen(fd, "wb") as f:
+            f.write(pdf)
+        os.replace(tmp, store.manual_path(sha))
+        old = (p.get("manual") or {}).get("sha256")
+        p["manual"] = {"sha256": sha, "size": len(pdf), "source": source, "added": now_iso()}
+        store.save_players()
+        _drop_unused_manual(old)
+    logger.info("Manual for player v%d: %s (%d KB, %s)", p["version"], source, len(pdf) // 1024, sha[:12])
+
+
+def _drop_unused_manual(sha: Optional[str]):
+    """Delete a manual file no player version refers to any more (lock held)."""
+    if not sha or any((p.get("manual") or {}).get("sha256") == sha for p in store.players.values()):
+        return
+    try:
+        os.unlink(store.manual_path(sha))
+    except OSError:
+        pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -868,7 +959,23 @@ def update_view(u: dict, live: dict) -> Optional[dict]:
         state, text = "failed", "failed: %s" % failed.get("error")
     else:
         state, text = "pending", "waiting for the unit"
-    return {"sha256": target, "version": p["version"], "state": state, "text": text}
+    view = {"sha256": target, "version": p["version"], "state": state, "text": text}
+    want = (p.get("manual") or {}).get("sha256")
+    if want:
+        mfailed = (live.get("failed") or {}).get("manual")
+        if (live.get("manual") or {}).get("sha256") == want:
+            view["manual"] = {"state": "ok", "text": "manual in place"}
+        elif have and have < 25:
+            view["manual"] = {"state": "off", "text": "manual: needs player v25+"}
+        elif have > p["version"]:
+            view["manual"] = {"state": "off", "text": "manual: the unit runs a newer version"}
+        elif job.get("slot") == "manual":
+            view["manual"] = {"state": "fetching", "text": "manual: fetching"}
+        elif mfailed and mfailed.get("sha256") == want:
+            view["manual"] = {"state": "failed", "text": "manual failed: %s" % mfailed.get("error")}
+        else:
+            view["manual"] = {"state": "pending", "text": "manual: waiting for the unit"}
+    return view
 
 
 def unit_view(uid: str, u: dict, now: float) -> dict:
@@ -1183,11 +1290,29 @@ def api_players_delete(sha):
                             % ", ".join(users[:5])}), 409
         p = store.players.pop(sha)
         store.save_players()
+        _drop_unused_manual((p.get("manual") or {}).get("sha256"))
     try:
         os.unlink(store.player_path(sha))
     except OSError:
         pass
     logger.info("Player v%d deleted (%s)", p["version"], sha[:12])
+    return jsonify({"ok": True})
+
+
+@app.route("/api/players/<sha>/manual", methods=["POST"])
+def api_players_manual(sha):
+    """Attach a manual PDF to a player version by hand - for a manager that
+    cannot reach GitHub itself (raw body, X-Filename ending .pdf)."""
+    name = clean_filename(request.headers.get("X-Filename", ""), (".pdf",))
+    length = request.content_length or 0
+    if not name:
+        return jsonify({"ok": False, "error": "the manual is a .pdf file"}), 400
+    if not 0 < length <= MANUAL_MAX_SIZE:
+        return jsonify({"ok": False, "error": "not a manual (size)"}), 400
+    try:
+        attach_manual(sha, request.get_data(cache=False), "uploaded %s" % name)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 422
     return jsonify({"ok": True})
 
 

@@ -11,7 +11,8 @@ players:
   fetches it, checks it and swaps it in; a download cut short carries on where it
   stopped; a player that is off catches up when it is back.
 - **Software**: keep players up to date from here, for sites where they have no
-  internet access of their own - and update the manager itself from its own page.
+  internet access of their own - the user manual goes with each version (players
+  v25 and later) - and update the manager itself from its own page.
 - **Open web UI** on any player, for everything else.
 
 It runs on a **Raspberry Pi** or a **Linux machine or VM**: Raspberry Pi OS

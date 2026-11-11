@@ -41,9 +41,13 @@
     <span id="pst" class="hint"></span>
   </div>
   <div class="scroll"><table>
-    <thead><tr><th>Version</th><th>From</th><th class="hide-narrow">Added</th><th>Target of</th><th></th></tr></thead>
+    <thead><tr><th>Version</th><th>From</th><th>Manual</th><th class="hide-narrow">Added</th><th>Target of</th><th></th></tr></thead>
     <tbody id="players"></tbody>
   </table></div>
+  <input type="file" id="manualFile" accept=".pdf,application/pdf" style="display:none" onchange="attachManual()">
+  <p class="hint">The user manual goes to the players with their version - for units that cannot reach GitHub.
+     A release from GitHub brings its own; for an uploaded script, attach the manual PDF (docs/USER_MANUAL.pdf
+     from the same release).</p>
 </div>
 <div class="card">
   <h3>Update players</h3>
@@ -102,6 +106,15 @@ async function load() {
       const tr = el('tr');
       const v = el('td'); v.appendChild(el('div', 'v' + x.version)); v.appendChild(el('div', x.sha256.slice(0, 16) + '…', 'hint mono')); tr.appendChild(v);
       tr.appendChild(el('td', x.source, 'hint'));
+      const mc = el('td');
+      if (x.manual) {
+        const ok = el('span', 'in hand, ' + mb(x.manual.size), 'badge t-ok');
+        ok.title = x.manual.source || ''; mc.appendChild(ok);
+      }
+      const att = el('button', x.manual ? 'Replace' : 'Attach manual', 'btn btn-grey btn-sm');
+      att.onclick = function () { manualFor = x.sha256; document.getElementById('manualFile').click(); };
+      mc.appendChild(document.createTextNode(' ')); mc.appendChild(att);
+      tr.appendChild(mc);
       tr.appendChild(el('td', x.added, 'hint hide-narrow'));
       tr.appendChild(el('td', x.used.length ? x.used.join(', ') : '—', 'hint'));
       const a = el('td'); const b = el('button', 'Delete', 'btn btn-red btn-sm'); b.disabled = x.used.length > 0;
@@ -110,7 +123,7 @@ async function load() {
     });
     sel.appendChild(new Option('(clear the update)', ''));
     if (keep) sel.value = keep;
-    if (!p.length) { const tr = el('tr'); const td = el('td', 'No player versions here yet.', 'hint'); td.colSpan = 5; tr.appendChild(td); body.appendChild(tr); }
+    if (!p.length) { const tr = el('tr'); const td = el('td', 'No player versions here yet.', 'hint'); td.colSpan = 6; tr.appendChild(td); body.appendChild(tr); }
     const units = (await (await fetch('/api/units')).json()).units || [];
     renderPicker(document.getElementById('pUnits'), units);
     const uv = document.getElementById('uv'); uv.textContent = '';
@@ -120,8 +133,11 @@ async function load() {
       tr.appendChild(el('td', u.group || '—', 'hint'));
       tr.appendChild(el('td', u.version ? 'v' + u.version : '?'));
       const s = el('td');
-      if (u.update) s.appendChild(el('span', 'v' + u.update.version + ': ' + u.update.text, 'badge ' + ({ok: 't-ok', fetching: 't-info', failed: 't-err', pending: 't-warn'}[u.update.state] || 't-off')));
-      else s.appendChild(el('span', '—', 'hint'));
+      const tone = function (st) { return 'badge ' + ({ok: 't-ok', fetching: 't-info', failed: 't-err', pending: 't-warn'}[st] || 't-off'); };
+      if (u.update) {
+        s.appendChild(el('span', 'v' + u.update.version + ': ' + u.update.text, tone(u.update.state)));
+        if (u.update.manual) s.appendChild(el('span', u.update.manual.text, tone(u.update.manual.state)));
+      } else s.appendChild(el('span', '—', 'hint'));
       tr.appendChild(s); uv.appendChild(tr);
     });
   } catch (e) {}
@@ -164,6 +180,16 @@ async function selfAsk(action) {
   if (action === 'update' && !confirm('Update this manager now? The page goes away for a few seconds while it restarts. The players carry on as they are.')) return;
   try { selfShow(await postJSON('/api/self/' + action)); } catch (e) { toast(e.message, false); }
   clearTimeout(selfTimer); selfTimer = setTimeout(loadSelf, 1500);
+}
+
+/* ── A manual for a player version ── */
+let manualFor = null;
+async function attachManual() {
+  const input = document.getElementById('manualFile'), f = input.files[0];
+  input.value = '';
+  if (!f || !manualFor) return;
+  try { await uploadRaw('/api/players/' + manualFor + '/manual', f); toast('Manual attached', true); load(); }
+  catch (e) { toast('Not attached: ' + e.message, false); }
 }
 
 /* ── The pages' password ── */
